@@ -208,309 +208,51 @@ sequenceDiagram
 
 ## 4. Public API & Typed Contract Signatures
 
-All core interfaces are expressed using strict Python `typing.Protocol` and immutable dataclasses with deep immutability (`Tuple`, `Mapping`).
-
-```python
-"""memory_aware_agent_harness.contracts: Complete public type contracts."""
-
-from __future__ import annotations
-
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import StrEnum
-from types import MappingProxyType
-from typing import (
-    Any,
-    Protocol,
-    runtime_checkable,
-)
-
-# --- Strong Type Identifiers ---
-RunId = str
-StepId = str
-MemoryId = str
-NamespaceId = str
-CheckpointId = str
-BranchId = str
-EventId = str
-ToolInvocationId = str
-
-
-# --- Enumerations ---
-class RunStatus(StrEnum):
-    """Execution lifecycle status of an agent run."""
-
-    INITIALIZED = "initialized"
-    RUNNING = "running"
-    PAUSED = "paused"
-    COMPLETED = "completed"
-    BUDGET_EXHAUSTED = "budget_exhausted"
-    CANCELLED = "cancelled"
-    ABORTED = "aborted"
-    FAILED = "failed"
-
-
-class MemoryKind(StrEnum):
-    """Cognitive behavioral categories for memory records."""
-
-    WORKING = "working"
-    EPISODIC = "episodic"
-    SEMANTIC = "semantic"
-    PROCEDURAL = "procedural"
-
-
-class MemoryState(StrEnum):
-    """Lifecycle state of a persistent memory record."""
-
-    ACTIVE = "active"
-    SUPERSEDED = "superseded"
-    EXPIRED = "expired"
-    DELETED = "deleted"
-
-
-class SideEffectType(StrEnum):
-    """Classification of external side effects caused by a tool."""
-
-    READ_ONLY = "read_only"
-    IDEMPOTENT_WRITE = "idempotent_write"
-    NON_IDEMPOTENT_WRITE = "non_idempotent_write"
-
-
-class ToolCallStatus(StrEnum):
-    """Execution outcome status of a tool invocation."""
-
-    PENDING = "pending"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    OUTCOME_UNKNOWN = "outcome_unknown"
-
-
-class ModelFinishReason(StrEnum):
-    """Reason for model decision completion."""
-
-    TOOL_CALL = "tool_call"
-    STOP = "stop"
-    LENGTH = "length"
-    ERROR = "error"
-
-
-# --- Immutable Data Records ---
-@dataclass(frozen=True)
-class ToolCallRequest:
-    """Request from a model to invoke a specific tool."""
-
-    call_id: str
-    tool_name: str
-    arguments: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
-
-
-@dataclass(frozen=True)
-class ModelDecision:
-    """Structured decision output produced by a ModelPort."""
-
-    decision_id: str
-    step_id: StepId
-    finish_reason: ModelFinishReason
-    content: str | None = None
-    tool_calls: tuple[ToolCallRequest, ...] = field(default_factory=tuple)
-    tokens_used: int = 0
-    raw_response: Mapping[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class ToolResult:
-    """Execution result returned by a tool invocation."""
-
-    invocation_id: ToolInvocationId
-    tool_name: str
-    status: ToolCallStatus
-    side_effect: SideEffectType
-    idempotency_key: str
-    result: Mapping[str, Any] | None = None
-    error: str | None = None
-    execution_time_ms: float = 0.0
-
-
-@dataclass(frozen=True)
-class MemoryRecord:
-    """Durable memory unit stored in the unified memory store."""
-
-    id: MemoryId
-    namespace_id: NamespaceId
-    kind: MemoryKind
-    content: str
-    state: MemoryState
-    confidence: float
-    salience: float
-    created_at: datetime
-    updated_at: datetime
-    expires_at: datetime | None = None
-    source_references: tuple[str, ...] = field(default_factory=tuple)
-    metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
-    access_count: int = 0
-    version: int = 1
-
-
-@dataclass(frozen=True)
-class MemoryCandidate:
-    """Extracted memory item proposed for validation and write."""
-
-    candidate_id: str
-    namespace_id: NamespaceId
-    kind: MemoryKind
-    content: str
-    proposed_salience: float
-    source_step_id: StepId
-    rationale: str
-    validation_status: str  # PENDING, APPROVED, REJECTED
-    rejection_reason: str | None = None
-
-
-@dataclass(frozen=True)
-class ContextItem:
-    """A retrieved memory selected for inclusion in the model context."""
-
-    memory_id: MemoryId
-    kind: MemoryKind
-    content: str
-    rank_score: float
-    provenance_id: str
-    token_cost: int
-
-
-@dataclass(frozen=True)
-class ContextManifest:
-    """Immutable manifest of compiled prompt context and budget accounting."""
-
-    manifest_id: str
-    step_id: StepId
-    included_items: tuple[ContextItem, ...]
-    excluded_item_ids: Mapping[MemoryId, str]
-    total_tokens: int
-    budget_limit: int
-    compiled_prompt: str
-
-
-@dataclass(frozen=True)
-class StepResult:
-    """Outcome of a single lifecycle step execution."""
-
-    step_id: StepId
-    run_id: RunId
-    step_number: int
-    decision: ModelDecision
-    tool_results: tuple[ToolResult, ...]
-    memories_proposed: int
-    memories_committed: int
-    tokens_consumed: int
-    completed_at: datetime
-
-
-@dataclass(frozen=True)
-class RunResult:
-    """Terminal outcome of an agent execution run."""
-
-    run_id: RunId
-    namespace_id: NamespaceId
-    status: RunStatus
-    step_count: int
-    total_tokens_consumed: int
-    final_output: str | None
-    trace_id: str
-    error: str | None = None
-
-
-# --- Typed Exceptions ---
-class HarnessError(Exception):
-    """Base class for all harness errors."""
-
-
-class BudgetExceededError(HarnessError):
-    """Raised when step, token, or time budget limit is exceeded."""
-
-
-class PolicyViolationError(HarnessError):
-    """Raised when an operation violates security or safety policy."""
-
-
-class ToolExecutionError(HarnessError):
-    """Raised when tool execution fails in the sandbox."""
-
-
-class CompensationFailedError(HarnessError):
-    """Raised when fallible compensation fails during rollback."""
-
-
-class ReplayDivergenceError(HarnessError):
-    """Raised when deterministic replay deviates from recorded trace."""
-
-
-class StorageError(HarnessError):
-    """Raised on database integrity or persistence failure."""
-
-
-# --- Core Protocols (Ports) ---
-@runtime_checkable
-class ModelPort(Protocol):
-    """Port for soliciting structured decisions from models or test doubles."""
-
-    def decide(
-        self, manifest: ContextManifest, tools_schema: Sequence[Mapping[str, Any]]
-    ) -> ModelDecision:
-        """Evaluate context manifest and return a structured decision."""
-        ...
-
-
-@runtime_checkable
-class MemoryStoreProtocol(Protocol):
-    """Port for durable multi-tier memory persistence."""
-
-    def put(self, record: MemoryRecord) -> None:
-        """Store or update a memory record."""
-        ...
-
-    def get(self, memory_id: MemoryId, namespace_id: NamespaceId) -> MemoryRecord | None:
-        """Fetch a single memory record by identifier within a namespace."""
-        ...
-
-    def search(
-        self,
-        namespace_id: NamespaceId,
-        query: str,
-        kinds: Sequence[MemoryKind],
-        limit: int,
-    ) -> Sequence[MemoryRecord]:
-        """Search memory records by query and category."""
-        ...
-
-    def tombstone(self, memory_id: MemoryId, namespace_id: NamespaceId, reason: str) -> None:
-        """Logically delete and tombstone a memory record."""
-        ...
-
-    def list_active(
-        self, namespace_id: NamespaceId, kind: MemoryKind
-    ) -> Sequence[MemoryRecord]:
-        """List active memories for a given category."""
-        ...
-
-
-@runtime_checkable
-class ToolProtocol(Protocol):
-    """Port for executable agent tools."""
-
-    name: str
-    description: str
-    side_effect: SideEffectType
-
-    def get_schema(self) -> Mapping[str, Any]:
-        """Return JSON Schema compatible dictionary of tool arguments."""
-        ...
-
-    def execute(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Execute tool and return structured observation."""
-        ...
-```
+All core interfaces are expressed using strict Python `typing.Protocol`, PEP 484 `NewType` strong identifiers, and immutable dataclasses with deep immutability (`Tuple`, `MappingProxyType`) and canonical serialization (`SerializableRecord`).
+
+> [!NOTE]
+> The canonical implementation and living contract source is maintained at [`src/memory_aware_agent_harness/contracts.py`](file:///Users/apple/Projects/memory-aware-agent-harness/src/memory_aware_agent_harness/contracts.py). Rather than duplicating 300+ lines of Python source in this architecture document, the sections below map every public component to its architectural role:
+
+### 4.1 Strong Type Identifiers (PEP 484 NewType)
+- `RunId`, `StepId`, `MemoryId`, `NamespaceId`, `CheckpointId`, `BranchId`, `EventId`, `ToolInvocationId`: Strong types preventing transposition errors across domain boundaries.
+
+### 4.2 Lifecycle & Behavioral Enumerations
+- `RunStatus`: Global execution states (`INITIALIZED`, `RUNNING`, `PAUSED`, `COMPLETED`, `BUDGET_EXHAUSTED`, `CANCELLED`, `ABORTED`, `FAILED`).
+- `StepState`: Granular operational step phases (`NOT_STARTED`, `RETRIEVING`, `COMPILING_CONTEXT`, `DECIDING`, `DISPATCHING_TOOL`, `EXTRACTING_MEMORIES`, `COMMITTING_MEMORIES`, `CHECKPOINTING`, `COMPLETED`, `FAILED`, `ABORTED`).
+- `MemoryKind`: Cognitive memory categories (`WORKING`, `EPISODIC`, `SEMANTIC`, `PROCEDURAL`).
+- `MemoryState`: Record persistence lifecycle (`ACTIVE`, `SUPERSEDED`, `EXPIRED`, `DELETED`).
+- `MemoryOrigin`: Provenance trust levels (`SYSTEM_PROVIDED`, `USER_EXPLICIT`, `AGENT_OBSERVATION`, `DERIVED_CONSOLIDATION`, `EXTERNAL_RETRIEVAL`).
+- `CandidateStatus`: Candidate ingestion state (`PENDING`, `APPROVED`, `REJECTED`).
+- `SideEffectType`: Tool impact rating (`READ_ONLY`, `IDEMPOTENT_WRITE`, `NON_IDEMPOTENT_WRITE`).
+- `ToolCallStatus`: Invocation outcome state (`PENDING`, `COMPLETED`, `FAILED`, `OUTCOME_UNKNOWN`).
+- `ModelFinishReason`: Completion classification (`TOOL_CALL`, `STOP`, `LENGTH`, `ERROR`).
+
+### 4.3 FSM Transition Matrices
+- `LEGAL_RUN_TRANSITIONS`: Frozen mapping of legal status transitions for the run-level FSM.
+- `LEGAL_STEP_TRANSITIONS`: Frozen mapping of legal step phase transitions for the turn-level FSM.
+
+### 4.4 Public Data Records (SerializableRecord)
+- `RunBudgets`: Maximum step, token, and time limits for a run.
+- `TokenUsage`: Detailed arithmetic accounting of prompt and completion token consumption.
+- `ModelCallContext`: Turn-scoped context passed to model adapters.
+- `ToolCallContext`: Invocation-scoped context passed to tool execution handlers (timeout, idempotency key).
+- `FailureDetails`: Structured diagnostic information for step and run errors.
+- `ToolCallRequest`: Model decision request for a specific tool invocation.
+- `ModelDecision`: Structured model completion output with tool calls or text response.
+- `ToolResult`: Execution observation returned by a tool invocation.
+- `MemoryRecord`: Durable multi-tier cognitive memory record with metadata and provenance.
+- `MemoryCandidate`: Extracted candidate fact submitted to the write policy.
+- `ContextItem`: Scored memory selected for prompt inclusion.
+- `ContextManifest`: Comprehensive manifest of compiled prompt text and token allocations.
+- `StepResult`: Aggregated outcome of a completed lifecycle step.
+- `RunResult`: Terminal summary of an execution run.
+
+### 4.5 Core Protocols (Hexagonal Ports)
+- `ClockPort`: Protocol for monotonic and mockable time provision (`now()`).
+- `IdGeneratorPort`: Protocol for deterministic identifier generation (`generate_id()`).
+- `ModelPort`: Protocol for soliciting structured completions from models or test doubles (`decide()`).
+- `MemoryStoreProtocol`: Protocol for durable multi-tier storage operations (`put()`, `get()`, `search()`, `tombstone()`, `list_active()`).
+- `ToolProtocol`: Protocol for executable agent tools (`get_schema()`, `execute()`).
 
 ---
 
@@ -594,6 +336,7 @@ CREATE INDEX IF NOT EXISTS idx_tombstones_lookup ON tombstones(namespace_id, tar
 CREATE TABLE IF NOT EXISTS tool_invocations (
     invocation_id TEXT PRIMARY KEY,
     step_id TEXT NOT NULL REFERENCES run_steps(step_id) ON DELETE CASCADE,
+    namespace_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
     arguments_json TEXT NOT NULL,
     side_effect TEXT NOT NULL, -- 'read_only', 'idempotent_write', 'non_idempotent_write'
@@ -602,9 +345,10 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
     result_json TEXT,
     error_text TEXT,
     dispatched_at TEXT NOT NULL,
-    completed_at TEXT
+    completed_at TEXT,
+    UNIQUE(namespace_id, tool_name, idempotency_key)
 );
-CREATE INDEX IF NOT EXISTS idx_tool_idempotency ON tool_invocations(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_tool_idempotency ON tool_invocations(namespace_id, tool_name, idempotency_key);
 
 -- 7. Checkpoints Table
 CREATE TABLE IF NOT EXISTS checkpoints (
@@ -630,6 +374,26 @@ CREATE TABLE IF NOT EXISTS trace_events (
 CREATE INDEX IF NOT EXISTS idx_events_sequence ON trace_events(run_id, sequence_num);
 ```
 
+### 5.1 Crash-Safe Step Commit Protocol & Orphaned-Run Recovery
+
+To guarantee atomicity and prevent corrupted or phantom state across crashes or unhandled process termination, step execution follows an intent-driven commit protocol:
+
+1. **Step Intent Registration (`INTENT_RECORDED`):**
+   Before executing any external tool, a pending row is inserted into `tool_invocations` with `status = 'pending'`, binding `(namespace_id, tool_name, idempotency_key, arguments_json)`. If the process terminates abruptly while the tool is executing, the intent remains durably recorded.
+2. **Tool Dispatch & Outcome Capture (`TOOL_DISPATCH` & `OUTCOME_UPDATE`):**
+   The tool is dispatched. If execution fails, times out, or crashes without confirmation, the invocation is marked `status = 'outcome_unknown'`. On standard completion, it is updated to `completed` or `failed`.
+3. **Atomic Step Commit Transaction (`ATOMIC_STEP_COMMIT`):**
+   All internal state updates for the completed step are committed in a **single atomic SQLite transaction**:
+   - `run_steps` row updated to `COMPLETED`.
+   - `runs` step counter and cumulative token usage incremented.
+   - Candidate memories approved by write policy inserted into `memory_records`.
+   - Durable checkpoint blob inserted into `checkpoints`.
+   - Step trace events appended to `trace_events`.
+4. **Crash Recovery & Orphaned Run Semantics:**
+   Upon agent reinitialization, the runtime scans for runs left in `RUNNING`. For any interrupted step:
+   - Tool intents are audited. If an in-flight tool was mutating (`IDEMPOTENT_WRITE` or `NON_IDEMPOTENT_WRITE`) and its completion is unconfirmed, its status is set to `OUTCOME_UNKNOWN`.
+   - The run transitions to `PAUSED` or `FAILED` with a `PARTIAL_DIRTY_ROLLBACK` diagnostic record, preventing automated blind re-execution of unverified side effects.
+
 ---
 
 ## 6. Rollback vs. Irreversible Side Effects Architecture
@@ -639,8 +403,8 @@ The harness enforces strict physical realism in its rollback model:
 ```mermaid
 flowchart TD
     RB[Rollback Requested to Checkpoint K] --> AUDIT{Audit tool invocations after K}
-    AUDIT -->|All tools READ_ONLY or IDEMPOTENT| CLEAN[CLEAN_ROLLBACK: Internal state restored cleanly]
-    AUDIT -->|NON_IDEMPOTENT tools detected| DIRTY[PARTIAL_DIRTY_ROLLBACK: Internal state restored; external state flagged DIRTY]
+    AUDIT -->|ALL tools strictly READ_ONLY| CLEAN[CLEAN_ROLLBACK: Internal state restored cleanly]
+    AUDIT -->|ANY tool was IDEMPOTENT_WRITE or NON_IDEMPOTENT_WRITE| DIRTY[PARTIAL_DIRTY_ROLLBACK: External state diverged; flagged DIRTY]
     DIRTY --> COMP{Compensating handlers registered?}
     COMP -->|Yes| RUN_COMP[Execute fallible compensation hooks]
     COMP -->|No| ALERT[Emit UNCOMPENSATED_SIDE_EFFECT audit event]
@@ -649,10 +413,16 @@ flowchart TD
     COMP_EVAL -->|No / Partial| COMP_FAIL[Emit COMPENSATION_FAILED: Require Operator Mediation]
 ```
 
-### 6.1 State Rollback Guarantees
+### 6.1 State Rollback Guarantees & Dirty Rollback
 - **Internal State:** Working memory, step counter, active plan, and uncommitted candidate memories are restored cleanly to the snapshot state at Checkpoint $K$.
-- **External State:** External physical actions cannot be magically un-executed.
-- **Fallible Compensation:** If compensation handlers exist, they are executed in reverse chronological order. If any compensation call fails, execution enters `PAUSED` state with status `PARTIAL_DIRTY_ROLLBACK` requiring human operator reconciliation.
+- **External State:** External physical mutations cannot be undone by software rewind. Idempotent writes mutate external state; rolling back past an `IDEMPOTENT_WRITE` or `NON_IDEMPOTENT_WRITE` leaves external reality mutated and diverged from rolled-back internal state.
+- **Rollback Classification:** A rollback is classified as `CLEAN_ROLLBACK` if and only if **all tools invoked after Checkpoint $K$ were strictly `READ_ONLY`**. Otherwise, the rollback is flagged as `PARTIAL_DIRTY_ROLLBACK`.
+- **Fallible Compensation:** If compensation handlers exist, they are executed in reverse chronological order. If any compensation call fails, execution halts in `PAUSED` state with status `PARTIAL_DIRTY_ROLLBACK` and uncompensated actions logged in `uncompensated_side_effects`.
+
+### 6.2 Branch Visibility & State Isolation
+- When branching from Checkpoint $K$, the runtime assigns a distinct `branch_id`.
+- Memory records and checkpoint states written on branch $B$ are strictly isolated from root and sibling branches.
+- Knowledge sharing across branches requires explicit consolidation policy evaluation.
 
 ---
 
@@ -668,12 +438,13 @@ Replay determinism is strictly scoped to **canonical recorded inputs and outputs
 ## 8. Multi-Boundary Forgetting & Physical Erasure
 
 The harness coordinates retention and forgetting across six storage boundaries:
-1. **Memory Records:** Retrieval exclusion via `state = 'deleted'` and tombstone lookup; physical removal via `DELETE` query and SQLite `VACUUM`.
-2. **Trace Events:** Retention limit pruning based on `retention_days`; summary tombstone record preserved.
-3. **Checkpoints:** Expired snapshot pruning; cascade deletion of child snapshots when parent run is scrubbed.
-4. **In-Memory Caches:** Instant cache key eviction on tombstone emission.
-5. **Exported Artifacts:** Exclusion filters omit tombstoned records during JSONL export; secure disk shredding for deleted runs.
-6. **Backups:** Point-in-time restore scripts apply tombstone filters during rehydration.
+1. **Memory Records:** Software removal via `DELETE FROM memory_records WHERE id = ?` followed by `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL log frames. Zero-retrieval enforced via `WHERE state = 'active'` index coverage.
+2. **Derived Memories:** Lineage invalidation propagates across consolidation products. Derived semantic memories referencing a purged ID are flagged as `origin_status = 'ORIGIN_PURGED'` and scheduled for eviction or re-consolidation.
+3. **Trace Events:** Retention limit pruning based on `retention_days`; summary tombstone record preserved while raw payloads are sanitized.
+4. **Checkpoints:** Expired snapshot pruning; cascade deletion of child snapshots when parent run is scrubbed.
+5. **In-Memory Caches:** Instant cache key eviction on tombstone emission.
+6. **Exported Artifacts & Backups:** Filter pipelines omit tombstoned records during export; point-in-time restore scripts apply tombstone filters during rehydration.
+7. **Physical Erasure Realism:** Acknowledges that underlying SSD/NVMe flash controllers perform wear-leveling out-of-place writes; user-space SQLite operations guarantee software-level deletion and WAL truncation, but cannot claim hardware flash cell destruction.
 
 ---
 
@@ -693,6 +464,8 @@ memory-aware-agent-harness/
 │   ├── __init__.py                # Package version definition
 │   ├── api.py                    # Public entrypoint (HarnessClient, RunConfig)
 │   ├── contracts.py              # Public Protocols, dataclasses, enums
+│   ├── doubles.py                # Deterministic test doubles (DeterministicClock, DeterministicIdGenerator)
+│   ├── py.typed                  # PEP 561 typing marker
 │   ├── runtime/                  # Phase 1: Core Runtime (FSM, orchestrator, budgets)
 │   ├── memory/                   # Phase 2: Memory Model (working, episodic, semantic, procedural)
 │   ├── storage/                  # Phase 2: Unified SQLite WAL Persistence
@@ -717,7 +490,7 @@ memory-aware-agent-harness/
 │   ├── 02_crash_recovery_idempotency.py
 │   └── 03_privacy_forgetting_tombstones.py
 └── docs/
-    ├── adr/                      # Architecture Decision Records (ADR-001 to ADR-010)
+    ├── adr/                      # Architecture Decision Records (ADR-001 to ADR-011)
     ├── lifecycle.md
     ├── memory_models.md
     └── security.md
@@ -734,8 +507,9 @@ memory-aware-agent-harness/
 | **ADR-003** | SQLite WAL Persistence as Reference Storage | SQLite in WAL mode with transactional boundaries and strict namespace indexing. | Distributed multi-node persistence required. |
 | **ADR-004** | Multi-Signal Retrieval & Budgeted Manifest | Combines lexical/BM25 relevance, recency decay, salience, and access frequency. | Learned re-ranker reliably outperforms within latency budget. |
 | **ADR-005** | Candidate Quarantine & Explicit Write Policy | Extracted memories are quarantined as `MemoryCandidate` until passed by policy. | None (core safety invariant). |
-| **ADR-006** | State Rollback vs. Fallible Side-Effect Compensation | Internal state resets cleanly; external side effects are flagged dirty; compensation is fallible. | None (fundamental physical constraint). |
+| **ADR-006** | State Rollback vs. Fallible Side-Effect Compensation | Internal state resets cleanly; mutating tools (including idempotent writes) flag dirty rollback. | None (fundamental physical constraint). |
 | **ADR-007** | Version-Bounded Deterministic Replay & Test Doubles | Determinism guaranteed only for recorded traces under compatible schema/model versions. | None (testing & CI requirement). |
-| **ADR-008** | Multi-Boundary Verifiable Forgetting | Durable tombstones and TTL expiry with SQL-level exclusion and physical purge protocols. | None (privacy & compliance requirement). |
+| **ADR-008** | Multi-Boundary Verifiable Forgetting & Erasure Lineage | Durable tombstones, WAL truncation, and derived memory invalidation with SSD physical realism. | None (privacy & compliance requirement). |
 | **ADR-009** | Phase 0 Packaging & Scaffolding Strategy | Introduce minimal `pyproject.toml`, linters, and smoke CI in Phase 0 without runtime code. | None (standard engineering practice). |
-| **ADR-010** | Deep Immutability in Public Data Contracts | Public records use frozen dataclasses with `Tuple` and `MappingProxyType` to prevent mutations. | None (contract integrity requirement). |
+| **ADR-010** | Deep Immutability, Normalization, and Canonical Serialization | Public records use recursive freezing to MappingProxyType/tuples and canonical JSON roundtrips. | None (contract integrity requirement). |
+| **ADR-011** | Strong Type Identifiers (NewType) and PEP 561 Typing | NewType domain identifiers and py.typed marker for compile-time safety and library consumption. | None (strict typing requirement). |
