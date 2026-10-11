@@ -144,6 +144,16 @@ class MemoryState(StrEnum):
     DELETED = "deleted"
 
 
+class MemoryOrigin(StrEnum):
+    """Provenance and trust classification for memory records."""
+
+    SYSTEM_PROVIDED = "system_provided"
+    USER_EXPLICIT = "user_explicit"
+    AGENT_OBSERVATION = "agent_observation"
+    DERIVED_CONSOLIDATION = "derived_consolidation"
+    EXTERNAL_RETRIEVAL = "external_retrieval"
+
+
 class CandidateStatus(StrEnum):
     """Validation lifecycle status for a proposed memory candidate."""
 
@@ -934,6 +944,7 @@ __all__ = [
     "MemoryCandidate",
     "MemoryId",
     "MemoryKind",
+    "MemoryOrigin",
     "MemoryRecord",
     "MemoryState",
     "MemoryStoreProtocol",

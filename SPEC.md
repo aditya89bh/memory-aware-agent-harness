@@ -178,26 +178,38 @@ $$\text{Score}(m, q) = w_{rel} \cdot S_{rel}(m, q) + w_{rec} \cdot S_{rec}(m) + 
    - Task Objective & User Input.
    - Working Memory Active Frame.
 2. **Dynamic Partitions:** Remaining token budget is allocated dynamically across Semantic, Episodic, and Procedural memories.
-3. **Prompt Injection Fencing:** Retrieved content is enclosed in structural XML fences (`<untrusted_memory id="..." kind="...">...</untrusted_memory>`). System instructions explicitly declare that memory contents have zero authority to modify system rules or invoke tools.
+3. **Prompt Injection Fencing & XML Escaping:** Retrieved content is enclosed in structural XML fences (`<untrusted_memory id="..." kind="..." origin="...">...</untrusted_memory>`). To prevent tag-breakout prompt injection attacks (such as embedded `</untrusted_memory><system>` payloads), all retrieved content is strictly XML-escaped (`&` to `&amp;`, `<` to `&lt;`, `>` to `&gt;`, `"` to `&quot;`, `'` to `&apos;`). System instructions declare that untrusted memories possess zero authority to modify instructions or invoke tools.
+4. **Memory Origin & Provenance Trust (`MemoryOrigin`):** Every memory record is tagged with an immutable origin classification:
+   - `SYSTEM_PROVIDED`: Ground-truth directives and administrative instructions.
+   - `USER_EXPLICIT`: Direct user utterances and preferences.
+   - `AGENT_OBSERVATION`: Observations extracted from tool outputs and environment interactions.
+   - `DERIVED_CONSOLIDATION`: Synthesized semantic memories produced by consolidation pipelines.
+   - `EXTERNAL_RETRIEVAL`: Context ingested from external knowledge bases or APIs.
+5. **Multi-Tenant Namespace Isolation:** Storage and retrieval enforce complete tenant boundary isolation via indexed `namespace_id`. Queries and writes are strictly scoped to the active namespace (`WHERE namespace_id = ?`); cross-namespace data access raises `PolicyViolationError`.
+6. **State Integrity Guarantees:** Checkpoint and event chain integrity is protected via deterministic SHA-256 state hashing across transitions, ensuring verifiable detection of local file corruption or unauthorized modification without relying on unrealistic hardware enclave claims.
 
 ---
 
 ## 6. Comprehensive Forgetting & Retention Specification
 
-The harness formalizes retention and deletion across all storage boundaries. It strictly distinguishes **Retrieval Exclusion** (logical hiding) from **Physical Erasure** (irreversible data destruction).
+The harness formalizes retention and deletion across all storage boundaries. It strictly distinguishes **Retrieval Exclusion** (logical hiding) from **Software Deletion and Lineage Propagation**, while explicitly acknowledging physical storage realities.
 
 ### 6.1 Storage Boundary Deletion Matrix
 
-| Storage Boundary | Retrieval Exclusion Mechanism | Physical Erasure Mechanism | Retention Audit Trail |
+| Storage Boundary | Retrieval Exclusion Mechanism | Software Deletion & WAL Compaction | Retention Audit Trail |
 |---|---|---|---|
-| **Memory Records (`memory_records`)** | State set to `DELETED`, `SUPERSEDED`, or `EXPIRED`. Excluded via `WHERE state = 'active'`. | `DELETE FROM memory_records WHERE id = ?`; followed by periodic `VACUUM`. | Durable `TombstoneRecord` retains `memory_id`, `namespace_id`, timestamp, and deletion reason. Content is scrubbed. |
-| **Trace Events (`trace_events`)** | Filtered during public replay or export if flagged for retention purge. | Hard deletion of event rows older than configured `retention_days`. | Run-level tombstone summary preserves total event count without payloads. |
+| **Memory Records (`memory_records`)** | State set to `DELETED`, `SUPERSEDED`, or `EXPIRED`. Excluded via `WHERE state = 'active'`. | `DELETE FROM memory_records WHERE id = ?`; `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL frames. | Durable `TombstoneRecord` retains `memory_id`, `namespace_id`, timestamp, and deletion reason. Content is scrubbed. |
+| **Derived Memories (Consolidation Products)** | Invalidation of derived entries whose source reference includes purged ID. | Marked as `origin_status = 'ORIGIN_PURGED'` and scheduled for re-consolidation or eviction. | Provenance lineage tree updated to record purged ancestor. |
+| **Trace Events (`trace_events`)** | Filtered during public replay or export if flagged for retention purge. | Hard deletion of event payloads older than configured `retention_days`. Sequence counter preserved. | Run-level tombstone summary preserves total event count without raw content payloads. |
 | **Checkpoints (`checkpoints`)** | Excluded from resume selection if marked obsolete or expired. | Cascading `DELETE` of expired checkpoint blobs. | Checkpoint deletion recorded in trace log. |
-| **In-Memory Caches & Scratchpads** | Immediate invalidation on step boundary or tombstone event. | Garbage collected by Python runtime (`None` assignment). | None (transient). |
-| **Exported Artifacts (JSONL, Reports)** | Not applicable (static files). | Secure file shred / deletion from disk; export filters omit tombstoned data. | File deletion event logged to system telemetry. |
-| **External Backups** | Filtered during rehydration/restore from backup. | Managed by external storage lifecycle policies (e.g., S3 retention). | Backup deletion manifests. |
+| **In-Memory Caches & Scratchpads** | Immediate invalidation on step boundary or tombstone event. | Garbage collected by Python runtime (`None` assignment and reference drop). | None (transient). |
+| **Exported Artifacts (JSONL, Reports)** | Export pipeline filters omit tombstoned data. | Software file deletion (`os.unlink`); overwrite before unlinking where supported. | File deletion event logged to system telemetry. |
+| **External Backups** | Filtered during rehydration/restore from backup. | Managed by external storage lifecycle policies (e.g., S3 retention rules). | Backup deletion manifests. |
 
-### 6.2 Zero-Retrieval Invariant
+### 6.2 Physical Erasure Realism
+SQLite `DELETE`, `VACUUM`, and `wal_checkpoint(TRUNCATE)` provide application-level deletion and page truncation. On modern solid-state media (NVMe/SATA SSDs), hardware flash translation layers (FTL) perform wear-leveling and asynchronous TRIM/garbage collection. Physical flash cell content destruction cannot be guaranteed by user-space POSIX file operations alone; the harness explicitly guarantees software-level retrieval exclusion, cryptographic WAL drainage, and derived lineage purging.
+
+### 6.3 Zero-Retrieval Invariant
 Any memory record with an active tombstone, an expired TTL (`expires_at <= current_time`), or a state in `('deleted', 'superseded', 'expired')` is **strictly prohibited from appearing in any retrieval query or compiled context**. This is enforced via parameterized SQL queries with composite index coverage.
 
 ---
@@ -209,8 +221,8 @@ A fundamental design requirement is that **internal computational state rollback
 ```mermaid
 flowchart TD
     RB[Rollback Requested to Checkpoint K] --> AUDIT{Audit tool invocations after K}
-    AUDIT -->|All tools READ_ONLY or IDEMPOTENT| CLEAN[CLEAN_ROLLBACK: Internal state restored cleanly]
-    AUDIT -->|NON_IDEMPOTENT tools detected| DIRTY[PARTIAL_DIRTY_ROLLBACK: Internal state restored; external state flagged DIRTY]
+    AUDIT -->|ALL tools strictly READ_ONLY| CLEAN[CLEAN_ROLLBACK: Internal state restored cleanly]
+    AUDIT -->|ANY tool was IDEMPOTENT_WRITE or NON_IDEMPOTENT_WRITE| DIRTY[PARTIAL_DIRTY_ROLLBACK: External state diverged; flagged DIRTY]
     DIRTY --> COMP{Compensating handlers registered?}
     COMP -->|Yes| RUN_COMP[Execute fallible compensation hooks]
     COMP -->|No| ALERT[Emit UNCOMPENSATED_SIDE_EFFECT audit event]
@@ -219,15 +231,20 @@ flowchart TD
     COMP_EVAL -->|No / Partial| COMP_FAIL[Emit COMPENSATION_FAILED: Require Operator Mediation]
 ```
 
-### 7.1 Side-Effect Categorization
-- `READ_ONLY`: Safe to repeat or ignore during rollback.
-- `IDEMPOTENT_WRITE`: Safe to re-run only with identical `idempotency_key`.
-- `NON_IDEMPOTENT_WRITE`: Real-world mutation (e.g., charge card, send email, delete resource). **Cannot be reversed by state rollback.**
+### 7.1 Side-Effect Categorization & Rollback Invariants
+- `READ_ONLY`: Observational only (e.g., reading a file, query database). Produces zero external side effects. Rollback across purely `READ_ONLY` tools is guaranteed `CLEAN_ROLLBACK`.
+- `IDEMPOTENT_WRITE`: Mutates external state (e.g., `PUT /record/123`, `CREATE OR REPLACE`). Re-executing with the same key produces an identical result, **but rolling back internal state does NOT undo the external mutation**. Rolling back past an `IDEMPOTENT_WRITE` flags the run as `PARTIAL_DIRTY_ROLLBACK`.
+- `NON_IDEMPOTENT_WRITE`: Irreversible real-world mutation (e.g., charging a card, sending an email, posting an external message). Rolling back past a `NON_IDEMPOTENT_WRITE` flags the run as `PARTIAL_DIRTY_ROLLBACK`.
 
 ### 7.2 Fallible Compensation Semantics
-- Compensation is **optional, fallible, and cannot guarantee reversal**.
-- When rolling back past a `NON_IDEMPOTENT_WRITE`, the runtime flags the state as `PARTIAL_DIRTY_ROLLBACK`.
-- If a compensation hook exists, it is invoked, but its failure produces a `CompensationFailedError` and leaves the invocation in `OUTCOME_UNKNOWN` / `UNCOMPENSATED` state for manual operator reconciliation.
+- Compensation handlers are **optional, best-effort, and fallible**; they cannot guarantee external reversal.
+- When rolling back past any mutating tool (`IDEMPOTENT_WRITE` or `NON_IDEMPOTENT_WRITE`), the runtime flags the state as `PARTIAL_DIRTY_ROLLBACK` and records the mutations in `uncompensated_side_effects`.
+- If a compensation hook exists, it is executed; on failure, a `CompensationFailedError` is raised, and the invocation remains logged as `OUTCOME_UNKNOWN` / `UNCOMPENSATED` for human operator remediation.
+
+### 7.3 Branch Visibility & State Isolation
+- When branching execution at Checkpoint K to create branch $B$, the new branch is allocated an isolated `branch_id`.
+- Memory additions and state updates performed on branch $B$ are strictly invisible to the parent or peer branches.
+- Merging knowledge across branches requires explicit policy evaluation through the memory consolidation pipeline.
 
 ---
 
