@@ -67,7 +67,7 @@ jobs:
         run: pytest -v --tb=short
 
   build-smoke:
-    name: Build & Package Smoke Test
+    name: Build & Package Smoke Test (Isolated Venv)
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -87,7 +87,14 @@ jobs:
       - name: Build wheel and sdist
         run: python -m build
 
-      - name: Verify package installation
+      - name: Fresh-Venv Isolated Wheel Installation & Verification
         run: |
-          pip install dist/*.whl
-          python -c "import memory_aware_agent_harness; print(memory_aware_agent_harness.__version__)"
+          python -m venv /tmp/smoke_venv
+          /tmp/smoke_venv/bin/pip install --upgrade pip
+          /tmp/smoke_venv/bin/pip install dist/*.whl
+          # Run import verification outside of source repository
+          cd /tmp
+          /tmp/smoke_venv/bin/python -c "import memory_aware_agent_harness as m; print(f'Version: {m.__version__}')"
+          /tmp/smoke_venv/bin/python -c "from memory_aware_agent_harness.contracts import MemoryRecord, RunStatus; print('Contracts imported successfully')"
+          /tmp/smoke_venv/bin/python -c "from memory_aware_agent_harness.doubles import DeterministicClock; c = DeterministicClock(); print(f'Clock double initialized: {c.now()}')"
+          /tmp/smoke_venv/bin/python -c "import importlib.resources as r; assert (r.files('memory_aware_agent_harness') / 'py.typed').is_file(), 'py.typed marker missing from installed wheel!'"
