@@ -110,6 +110,22 @@ class RunStatus(StrEnum):
     FAILED = "failed"
 
 
+class StepState(StrEnum):
+    """Discrete execution lifecycle phases of a single step."""
+
+    NOT_STARTED = "not_started"
+    RETRIEVING = "retrieving"
+    COMPILING_CONTEXT = "compiling_context"
+    DECIDING = "deciding"
+    DISPATCHING_TOOL = "dispatching_tool"
+    EXTRACTING_MEMORIES = "extracting_memories"
+    COMMITTING_MEMORIES = "committing_memories"
+    CHECKPOINTING = "checkpointing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    ABORTED = "aborted"
+
+
 class MemoryKind(StrEnum):
     """Cognitive behavioral categories for memory records."""
 
@@ -162,7 +178,233 @@ class ModelFinishReason(StrEnum):
     ERROR = "error"
 
 
+# --- FSM Transition Matrices ---
+LEGAL_RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = MappingProxyType(
+    {
+        RunStatus.INITIALIZED: frozenset(
+            {RunStatus.RUNNING, RunStatus.CANCELLED, RunStatus.FAILED}
+        ),
+        RunStatus.RUNNING: frozenset(
+            {
+                RunStatus.RUNNING,
+                RunStatus.PAUSED,
+                RunStatus.COMPLETED,
+                RunStatus.BUDGET_EXHAUSTED,
+                RunStatus.CANCELLED,
+                RunStatus.ABORTED,
+                RunStatus.FAILED,
+            }
+        ),
+        RunStatus.PAUSED: frozenset(
+            {RunStatus.RUNNING, RunStatus.CANCELLED, RunStatus.ABORTED, RunStatus.FAILED}
+        ),
+        RunStatus.COMPLETED: frozenset(),
+        RunStatus.BUDGET_EXHAUSTED: frozenset(),
+        RunStatus.CANCELLED: frozenset(),
+        RunStatus.ABORTED: frozenset(),
+        RunStatus.FAILED: frozenset(),
+    }
+)
+
+LEGAL_STEP_TRANSITIONS: Mapping[StepState, frozenset[StepState]] = MappingProxyType(
+    {
+        StepState.NOT_STARTED: frozenset(
+            {StepState.RETRIEVING, StepState.FAILED, StepState.ABORTED}
+        ),
+        StepState.RETRIEVING: frozenset(
+            {StepState.COMPILING_CONTEXT, StepState.FAILED, StepState.ABORTED}
+        ),
+        StepState.COMPILING_CONTEXT: frozenset(
+            {StepState.DECIDING, StepState.FAILED, StepState.ABORTED}
+        ),
+        StepState.DECIDING: frozenset(
+            {
+                StepState.DISPATCHING_TOOL,
+                StepState.EXTRACTING_MEMORIES,
+                StepState.COMPLETED,
+                StepState.FAILED,
+                StepState.ABORTED,
+            }
+        ),
+        StepState.DISPATCHING_TOOL: frozenset(
+            {StepState.EXTRACTING_MEMORIES, StepState.FAILED, StepState.ABORTED}
+        ),
+        StepState.EXTRACTING_MEMORIES: frozenset(
+            {
+                StepState.COMMITTING_MEMORIES,
+                StepState.CHECKPOINTING,
+                StepState.COMPLETED,
+                StepState.FAILED,
+                StepState.ABORTED,
+            }
+        ),
+        StepState.COMMITTING_MEMORIES: frozenset(
+            {StepState.CHECKPOINTING, StepState.COMPLETED, StepState.FAILED, StepState.ABORTED}
+        ),
+        StepState.CHECKPOINTING: frozenset(
+            {StepState.COMPLETED, StepState.FAILED, StepState.ABORTED}
+        ),
+        StepState.COMPLETED: frozenset(),
+        StepState.FAILED: frozenset(),
+        StepState.ABORTED: frozenset(),
+    }
+)
+
+
 # --- Immutable Data Records with Contract Validation ---
+@dataclass(frozen=True)
+class RunBudgets(SerializableRecord):
+    """Configured resource exhaustion limits for an agent execution run."""
+
+    max_steps: int = 50
+    max_tokens: int = 100_000
+    max_time_seconds: float = 300.0
+
+    def __post_init__(self) -> None:
+        if self.max_steps <= 0:
+            raise ValueError(f"RunBudgets.max_steps must be > 0, got {self.max_steps}")
+        if self.max_tokens <= 0:
+            raise ValueError(f"RunBudgets.max_tokens must be > 0, got {self.max_tokens}")
+        if self.max_time_seconds <= 0.0:
+            raise ValueError(
+                f"RunBudgets.max_time_seconds must be > 0.0, got {self.max_time_seconds}"
+            )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        return cls(
+            max_steps=int(data.get("max_steps", 50)),
+            max_tokens=int(data.get("max_tokens", 100_000)),
+            max_time_seconds=float(data.get("max_time_seconds", 300.0)),
+        )
+
+
+@dataclass(frozen=True)
+class TokenUsage(SerializableRecord):
+    """Detailed accounting of model token consumption."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+    def __post_init__(self) -> None:
+        if self.prompt_tokens < 0 or self.completion_tokens < 0 or self.total_tokens < 0:
+            raise ValueError("Token counts must be non-negative")
+        if self.total_tokens != self.prompt_tokens + self.completion_tokens:
+            raise ValueError(
+                f"total_tokens ({self.total_tokens}) must equal "
+                f"prompt_tokens ({self.prompt_tokens}) + "
+                f"completion_tokens ({self.completion_tokens})"
+            )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        return cls(
+            prompt_tokens=int(data["prompt_tokens"]),
+            completion_tokens=int(data["completion_tokens"]),
+            total_tokens=int(data["total_tokens"]),
+        )
+
+
+@dataclass(frozen=True)
+class ModelCallContext(SerializableRecord):
+    """Runtime context provided to a ModelPort invocation."""
+
+    run_id: RunId
+    step_id: StepId
+    namespace_id: NamespaceId
+    budget_remaining_tokens: int
+
+    def __post_init__(self) -> None:
+        if not str(self.run_id).strip():
+            raise ValueError("ModelCallContext.run_id must not be empty")
+        if not str(self.step_id).strip():
+            raise ValueError("ModelCallContext.step_id must not be empty")
+        if not str(self.namespace_id).strip():
+            raise ValueError("ModelCallContext.namespace_id must not be empty")
+        if self.budget_remaining_tokens < 0:
+            raise ValueError(
+                "ModelCallContext.budget_remaining_tokens must be >= 0, "
+                f"got {self.budget_remaining_tokens}"
+            )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        return cls(
+            run_id=RunId(str(data["run_id"])),
+            step_id=StepId(str(data["step_id"])),
+            namespace_id=NamespaceId(str(data["namespace_id"])),
+            budget_remaining_tokens=int(data["budget_remaining_tokens"]),
+        )
+
+
+@dataclass(frozen=True)
+class ToolCallContext(SerializableRecord):
+    """Runtime context provided to a tool execution."""
+
+    run_id: RunId
+    step_id: StepId
+    namespace_id: NamespaceId
+    invocation_id: ToolInvocationId
+    idempotency_key: str
+    timeout_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        if not str(self.run_id).strip():
+            raise ValueError("ToolCallContext.run_id must not be empty")
+        if not str(self.step_id).strip():
+            raise ValueError("ToolCallContext.step_id must not be empty")
+        if not str(self.namespace_id).strip():
+            raise ValueError("ToolCallContext.namespace_id must not be empty")
+        if not str(self.invocation_id).strip():
+            raise ValueError("ToolCallContext.invocation_id must not be empty")
+        if not self.idempotency_key.strip():
+            raise ValueError("ToolCallContext.idempotency_key must not be empty")
+        if self.timeout_seconds <= 0.0:
+            raise ValueError(
+                f"ToolCallContext.timeout_seconds must be > 0.0, got {self.timeout_seconds}"
+            )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        return cls(
+            run_id=RunId(str(data["run_id"])),
+            step_id=StepId(str(data["step_id"])),
+            namespace_id=NamespaceId(str(data["namespace_id"])),
+            invocation_id=ToolInvocationId(str(data["invocation_id"])),
+            idempotency_key=str(data["idempotency_key"]),
+            timeout_seconds=float(data.get("timeout_seconds", 30.0)),
+        )
+
+
+@dataclass(frozen=True)
+class FailureDetails(SerializableRecord):
+    """Structured diagnostic details for step or run failures."""
+
+    error_type: str
+    message: str
+    step_id: StepId | None = None
+    traceback_summary: str | None = None
+    recovery_hint: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.error_type.strip():
+            raise ValueError("FailureDetails.error_type must not be empty")
+        if not self.message.strip():
+            raise ValueError("FailureDetails.message must not be empty")
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        step_id_raw = data.get("step_id")
+        return cls(
+            error_type=str(data["error_type"]),
+            message=str(data["message"]),
+            step_id=StepId(str(step_id_raw)) if step_id_raw is not None else None,
+            traceback_summary=data.get("traceback_summary"),
+            recovery_hint=data.get("recovery_hint"),
+        )
+
+
 @dataclass(frozen=True)
 class ToolCallRequest(SerializableRecord):
     """Request from a model to invoke a specific tool."""
@@ -591,11 +833,32 @@ class StorageError(HarnessError):
 
 # --- Core Protocols (Ports) ---
 @runtime_checkable
+class ClockPort(Protocol):
+    """Port for time provision to enable deterministic time traveling."""
+
+    def now(self) -> datetime:
+        """Return the current timezone-aware UTC datetime."""
+        ...
+
+
+@runtime_checkable
+class IdGeneratorPort(Protocol):
+    """Port for identifier generation to enable deterministic replay."""
+
+    def generate_id(self, prefix: str = "") -> str:
+        """Generate a unique string identifier with optional domain prefix."""
+        ...
+
+
+@runtime_checkable
 class ModelPort(Protocol):
     """Port for soliciting structured decisions from models or test doubles."""
 
     def decide(
-        self, manifest: ContextManifest, tools_schema: Sequence[Mapping[str, Any]]
+        self,
+        manifest: ContextManifest,
+        tools_schema: Sequence[Mapping[str, Any]],
+        context: ModelCallContext | None = None,
     ) -> ModelDecision:
         """Evaluate context manifest and return a structured decision."""
         ...
@@ -644,33 +907,44 @@ class ToolProtocol(Protocol):
         """Return JSON Schema compatible dictionary of tool arguments."""
         ...
 
-    def execute(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    def execute(
+        self,
+        arguments: Mapping[str, Any],
+        context: ToolCallContext | None = None,
+    ) -> Mapping[str, Any]:
         """Execute tool and return structured observation."""
         ...
 
 
 __all__ = [
+    "LEGAL_RUN_TRANSITIONS",
+    "LEGAL_STEP_TRANSITIONS",
     "BranchId",
     "BudgetExceededError",
     "CandidateStatus",
     "CheckpointId",
+    "ClockPort",
     "CompensationFailedError",
     "ContextItem",
     "ContextManifest",
     "EventId",
+    "FailureDetails",
     "HarnessError",
+    "IdGeneratorPort",
     "MemoryCandidate",
     "MemoryId",
     "MemoryKind",
     "MemoryRecord",
     "MemoryState",
     "MemoryStoreProtocol",
+    "ModelCallContext",
     "ModelDecision",
     "ModelFinishReason",
     "ModelPort",
     "NamespaceId",
     "PolicyViolationError",
     "ReplayDivergenceError",
+    "RunBudgets",
     "RunId",
     "RunResult",
     "RunStatus",
@@ -678,7 +952,10 @@ __all__ = [
     "SideEffectType",
     "StepId",
     "StepResult",
+    "StepState",
     "StorageError",
+    "TokenUsage",
+    "ToolCallContext",
     "ToolCallRequest",
     "ToolCallStatus",
     "ToolExecutionError",
