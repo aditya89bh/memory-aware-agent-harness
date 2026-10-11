@@ -1,8 +1,8 @@
 # ROADMAP.md: 13-Phase Master Development Roadmap
 
-**Status:** PROPOSED (Phase 0 Architecture Revision 2)  
+**Status:** REVISED (Phase 0 Independent Review Remediation)  
 **Governing Rule:** No application or runtime implementation until `SPEC.md`, `ARCHITECTURE.md`, and `ROADMAP.md` are jointly approved and locked.  
-**Planning Target:** 340 meaningful commits across 13 phases (acceptable range: 300–350 commits). *340 is a target, not a quota.*
+**Planning Target:** 352 meaningful commits across 13 phases (acceptable range: 300–360 commits). *Target, not an artificial quota.*
 
 ---
 
@@ -10,47 +10,58 @@
 
 | Phase | Focus Area | Target Commits | Cumulative Commits | Milestone / Release Gate |
 |---|---|:---:|:---:|---|
-| **Phase 0** | Foundation, Specs, Package Setup | 16 | 16 | Project skeleton & approved specs |
-| **Phase 1** | Core Runtime & Lifecycle | 30 | 46 | FSM execution & budget bounds |
-| **Phase 2** | Memory Model & Storage Abstractions | 34 | 80 | Unified SQLite WAL persistence |
-| **Phase 3** | Retrieval, Ranking, Context Compiler | 34 | 114 | Multi-signal ranker & fenced context |
-| **Phase 4** | Memory Writes, Consolidation, Forgetting | 30 | 144 | Quarantined writes & verifiable deletion |
-| **Phase 5** | Tool Runtime & Routing | 26 | 170 | **v0.1.0 (Core Lifecycle MVP)** |
-| **Phase 6** | Checkpointing, Resume, Rollback, Branching | 26 | 196 | **v0.2.0 (Continuity & Recovery)** |
-| **Phase 7** | Tracing, Provenance, Event Model | 28 | 224 | Lineage graph & PII redaction |
-| **Phase 8** | Replay & Deterministic Hooks | 24 | 248 | **v0.3.0 (Governance & Replay)** |
-| **Phase 9** | Evaluation Framework & Metrics | 26 | 274 | 3-baseline comparison runner |
-| **Phase 10** | Benchmarks & Regression Suites | 22 | 296 | **v0.4.0 (Evaluation & Benchmarks)** |
-| **Phase 11** | Integrations & Realistic Demos | 20 | 316 | 3 runnable end-to-end scenarios |
-| **Phase 12** | Hardening, Docs, Packaging, Release | 24 | 340 | **v1.0.0 (Production Hardened)** |
-| **Total** | | **340** | | |
+| **Phase 0** | Foundation, Specs, Package Setup & Remediation | 28 | 28 | Project skeleton, typed contracts, & approved specs |
+| **Phase 1** | Core Runtime & Lifecycle | 30 | 58 | FSM execution & budget bounds |
+| **Phase 2** | Memory Model & Storage Abstractions | 34 | 92 | Unified SQLite WAL persistence |
+| **Phase 3** | Retrieval, Ranking, Context Compiler | 34 | 126 | Multi-signal ranker & fenced context |
+| **Phase 4** | Memory Writes, Consolidation, Forgetting | 30 | 156 | Quarantined writes & verifiable deletion |
+| **Phase 5** | Tool Runtime & Routing | 26 | 182 | **v0.1.0 (Core Lifecycle MVP)** |
+| **Phase 6** | Checkpointing, Resume, Rollback, Branching | 26 | 208 | **v0.2.0 (Continuity & Recovery)** |
+| **Phase 7** | Tracing, Provenance, Event Model | 28 | 236 | Lineage graph & PII redaction |
+| **Phase 8** | Replay & Deterministic Hooks | 24 | 260 | **v0.3.0 (Governance & Replay)** |
+| **Phase 9** | Evaluation Framework & Metrics | 26 | 286 | 3-baseline comparison runner |
+| **Phase 10** | Benchmarks & Regression Suites | 22 | 308 | **v0.4.0 (Evaluation & Benchmarks)** |
+| **Phase 11** | Integrations & Realistic Demos | 20 | 328 | 3 runnable end-to-end scenarios |
+| **Phase 12** | Hardening, Docs, Packaging, Release | 24 | 352 | **v1.0.0 (Production Hardened)** |
+| **Total** | | **352** | | |
 
 ---
 
-## 2. Accounting of Existing Commits & Phase 0 Remaining Plan
+## 2. Accounting of Phase 0 Commits
 
-### 2.1 Existing Pushed Commits (3 of 16)
-The following 3 commits are already published on `origin/main` and count toward the Phase 0 total:
+### 2.1 Baseline Phase 0 Commits (Commits 1 to 16)
+The following 16 baseline commits established Phase 0 foundation:
 1. `9535535`: `docs: add draft spec specification`
 2. `45b66c8`: `docs: add draft architecture specification`
 3. `96d59df`: `docs: add draft roadmap specification`
+4. `69c2794`: `docs(spec): reconcile lifecycle, storage contracts, and retention`
+5. `5dbafdf`: `docs(architecture): specify deep immutability, compensation, and DDL`
+6. `f3ec6cf`: `docs(roadmap): expand to 13-phase development plan with release milestones`
+7. `475b7f7`: `docs(adr): add architecture decision records ADR-001 through ADR-010`
+8. `2b26090`: `docs(security): define threat model, injection defenses, and boundaries`
+9. `b9bfdd2`: `chore(packaging): configure pyproject.toml with toolchain settings`
+10. `1bf1660`: `chore(lint): configure ruff rules and pre-commit hooks`
+11. `2a373fe`: `chore(types): configure strict mypy settings`
+12. `ffab94e`: `chore(package): initialize package skeleton and version metadata`
+13. `2f9f116`: `feat(contracts): define public type contracts, protocols, and exceptions`
+14. `279aa28`: `test(skeleton): create pytest directory structure and fixtures`
+15. `b9d21ee`: `ci(github): add workflow for linting, typing, and smoke testing`
+16. `66481a9`: `docs(report): complete phase 0 report and smoke validation`
 
-### 2.2 Remaining Phase 0 Task List (13 Commits, 1 Commit per Task)
-The remaining 13 commits in Phase 0 complete foundational scaffolding and packaging without implementing runtime code:
-
-- **Commit 04 (Task 0.4):** Update and reconcile [SPEC.md](file:///Users/apple/Projects/memory-aware-agent-harness/SPEC.md) with complete FSM states vs. operations, unified storage contracts, and retention rules.
-- **Commit 05 (Task 0.5):** Update and reconcile [ARCHITECTURE.md](file:///Users/apple/Projects/memory-aware-agent-harness/ARCHITECTURE.md) with deep immutability, fallible compensation, and SQLite DDL.
-- **Commit 06 (Task 0.6):** Update and reconcile [ROADMAP.md](file:///Users/apple/Projects/memory-aware-agent-harness/ROADMAP.md) with 13 phases, commit cadence, and release definitions.
-- **Commit 07 (Task 0.7):** Add Architecture Decision Records (ADR-001 through ADR-010) to `docs/adr/`.
-- **Commit 08 (Task 0.8):** Add comprehensive Threat Model and Security Specifications to `docs/security.md`.
-- **Commit 09 (Task 0.9):** Create initial `pyproject.toml` with project metadata, dependencies, and tool configs (Ruff, Mypy, Pytest).
-- **Commit 10 (Task 0.10):** Add Ruff linting and formatting configuration and pre-commit hooks.
-- **Commit 11 (Task 0.11):** Add strict Mypy type-checking configuration (`mypy.ini` or `pyproject.toml`).
-- **Commit 12 (Task 0.12):** Create source package skeleton `src/memory_aware_agent_harness/__init__.py` with package version.
-- **Commit 13 (Task 0.13):** Create public typing contracts stub `src/memory_aware_agent_harness/contracts.py`.
-- **Commit 14 (Task 0.14):** Set up Pytest test directory layout and basic test fixtures in `tests/conftest.py`.
-- **Commit 15 (Task 0.15):** Add GitHub Actions CI workflow `.github/workflows/ci.yml` for linting, typing, and smoke tests.
-- **Commit 16 (Task 0.16):** Execute package build and installation smoke verification, document Phase 0 completion report, and lock architecture.
+### 2.2 Independent Review Remediation Tasks (Commits 17 to 28)
+Addressing Claude Code independent architecture review findings (H-01 through H-07, and Medium findings):
+- **Commit 17 (Task 0.17):** Ingest independent review findings and formulate 12-task remediation plan.
+- **Commit 18 (Task 0.18):** `fix(contracts): add NewType identifiers, CandidateStatus, and validation rules` (PEP 484 NewType IDs, bounds validation).
+- **Commit 19 (Task 0.19):** `feat(contracts): implement deep immutability, normalization, and serialization` (Resolves H-01: recursive freezing, alias defense, canonical JSON roundtrips).
+- **Commit 20 (Task 0.20):** `feat(contracts): define FSM states, transition matrix, and execution contexts` (Resolves H-02, H-03, H-04: StepState, transition tables, RunBudgets, TokenUsage, contexts, Clock/Id ports).
+- **Commit 21 (Task 0.21):** `feat(replay): add deterministic test doubles for clock and id generator` (Resolves H-03: DeterministicClock and DeterministicIdGenerator).
+- **Commit 22 (Task 0.22):** `docs(spec): reconcile rollback semantics, erasure propagation, and threat model` (Resolves H-05, H-06, H-07: mutating write rollback, erasure propagation, XML escaping, MemoryOrigin).
+- **Commit 23 (Task 0.23):** `docs(architecture): update FSM, step commit protocol, and prune duplicate code` (Resolves H-02, H-04, H-05, ADR-0006/8/10/11 updates).
+- **Commit 24 (Task 0.24):** `docs(roadmap): update Phase 0 remediation accounting and milestone gates` (This task: master plan accounting).
+- **Commit 25 (Task 0.25):** `chore(license): add Apache-2.0 license and fix packaging metadata` (Root LICENSE, pyproject metadata).
+- **Commit 26 (Task 0.26):** `chore(ci): align ruff configuration and add wheel installation smoke test` (Pre-commit alignment, wheel smoke test in CI).
+- **Commit 27 (Task 0.27):** `test(remediation): add comprehensive negative-path and failure test suite` (Negative contract tests, crash boundaries, budget bounds).
+- **Commit 28 (Task 0.28):** `docs(report): compile independent review remediation matrix and validation evidence` (Final matrix and Phase 0 completion report).
 
 ---
 
@@ -147,12 +158,14 @@ Every benchmark suite evaluates the agent across three explicit configurations u
 - **Scope:** Checkpoint snapshots, resume protocol, branch DAG, side-effect boundary audit, dirty rollback flags, and fallible compensation hooks.
 - **Acceptance Gate:**
   - Crash-recovery matrix tests pass across all step boundaries.
-  - Rollback past non-idempotent tools flags `PARTIAL_DIRTY_ROLLBACK` and never silently re-executes.
+  - Rollback past any mutating tools (`IDEMPOTENT_WRITE` or `NON_IDEMPOTENT_WRITE`) flags `PARTIAL_DIRTY_ROLLBACK` and never silently re-executes.
+  - Branch visibility tests assert memory isolation across execution tree branches.
 
 ### Milestone 3: v0.3.0 (Governance & Replay) — End of Phase 8
 - **Scope:** Candidate quarantine, episodic-to-semantic consolidation, lineage graphs, verifiable tombstone deletion, TTL expiry, and deterministic replay engine.
 - **Acceptance Gate:**
   - 0.0% retrieval of deleted/expired items in forgetting compliance tests.
+  - Invalidation of derived memories referencing purged records (`origin_status = 'ORIGIN_PURGED'`).
   - 100% bit-for-bit trajectory replay fidelity using recorded traces and test doubles.
 
 ### Milestone 4: v0.4.0 (Evaluation & Benchmarks) — End of Phase 10
@@ -174,11 +187,11 @@ Every benchmark suite evaluates the agent across three explicit configurations u
 
 | Risk ID | Category | Description | Severity | Likelihood | Mitigation Strategy |
 |---|---|---|:---:|:---:|---|
-| **RSK-01** | Architecture | Naive rollback accidentally repeats destructive external tool calls. | **Critical** | Medium | Separate internal state from external side effects; flag dirty rollbacks; require compensation hooks. |
-| **RSK-02** | Security | Memory retrieval injects adversarial instructions into prompt. | **High** | Medium | Structural untrusted content fencing (`<untrusted_memory>`); explicit system instruction insulation; memory never authorizes tools. |
+| **RSK-01** | Architecture | Naive rollback accidentally repeats destructive external tool calls or assumes idempotent writes are reversible. | **Critical** | Medium | Separate internal state from external side effects; classify both idempotent and non-idempotent writes as external mutations; flag `PARTIAL_DIRTY_ROLLBACK`; execute fallible compensation. |
+| **RSK-02** | Security | Memory retrieval injects adversarial instructions into prompt or breaks out of delimiters. | **High** | Medium | Structural untrusted content fencing (`<untrusted_memory>`); mandatory XML escaping of memory content (`&lt;`, `&gt;`, `&amp;`); memory trust categorization (`MemoryOrigin`). |
 | **RSK-03** | Data Hygiene | Unbounded memory growth degrades retrieval quality and increases latency. | **High** | High | Phase 4 consolidation engine; LRU/decay pruning; TTL expiry; hard capacity thresholds. |
-| **RSK-04** | Compliance | Deleted memories resurface in retrieval due to caching or loose queries. | **Critical** | Low | SQL-level tombstone exclusion invariant; automated forgetting compliance regression tests. |
-| **RSK-05** | Reliability | Harness crashes mid-step leaving database or tool state corrupted. | **High** | Medium | SQLite WAL transactions; atomic multi-table commits; `OUTCOME_UNKNOWN` state for unresolved tool calls. |
+| **RSK-04** | Compliance | Deleted memories resurface in retrieval or persist in derived knowledge. | **Critical** | Low | SQL-level tombstone exclusion invariant; WAL frame truncation (`PRAGMA wal_checkpoint(TRUNCATE)`); lineage propagation to derived memories (`ORIGIN_PURGED`). |
+| **RSK-05** | Reliability | Harness crashes mid-step leaving database or tool state corrupted. | **High** | Medium | SQLite WAL transactions; crash-safe two-phase step commit protocol (intent registration $\rightarrow$ dispatch $\rightarrow$ outcome update $\rightarrow$ atomic commit); `OUTCOME_UNKNOWN` handling on recovery. |
 | **RSK-06** | Testing | Test suite flakiness due to non-deterministic external LLMs or APIs. | **High** | High | First-class deterministic test doubles (`FakeModelAdapter`, `DeterministicClock`, `SeedableRNG`); zero live API calls in CI. |
 | **RSK-07** | Scope | Project scope expands into distributed multi-agent swarm framework. | **Medium** | Medium | Strict adherence to Non-Goals in [SPEC.md](file:///Users/apple/Projects/memory-aware-agent-harness/SPEC.md); single-agent, single-process focus. |
 | **RSK-08** | Packaging | Packaging deferred to project end results in last-minute dependency conflicts. | **Medium** | High | Introduce minimal `pyproject.toml`, linters, and smoke CI in Phase 0 (Task 0.9). |
