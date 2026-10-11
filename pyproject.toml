@@ -8,7 +8,7 @@ version = "0.1.0.dev0"
 description = "A memory-aware single-agent execution harness integrating memory as a first-class lifecycle component."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [
     { name = "Aditya bhatia", email = "aditya89bh@gmail.com" }
 ]
@@ -16,7 +16,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
