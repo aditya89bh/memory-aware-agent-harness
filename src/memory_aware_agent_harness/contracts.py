@@ -9,19 +9,20 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import (
     Any,
+    NewType,
     Protocol,
     runtime_checkable,
 )
 
-# --- Strong Type Identifiers ---
-RunId = str
-StepId = str
-MemoryId = str
-NamespaceId = str
-CheckpointId = str
-BranchId = str
-EventId = str
-ToolInvocationId = str
+# --- Strong Type Identifiers (PEP 484 NewType) ---
+RunId = NewType("RunId", str)
+StepId = NewType("StepId", str)
+MemoryId = NewType("MemoryId", str)
+NamespaceId = NewType("NamespaceId", str)
+CheckpointId = NewType("CheckpointId", str)
+BranchId = NewType("BranchId", str)
+EventId = NewType("EventId", str)
+ToolInvocationId = NewType("ToolInvocationId", str)
 
 
 # --- Enumerations ---
@@ -56,6 +57,14 @@ class MemoryState(StrEnum):
     DELETED = "deleted"
 
 
+class CandidateStatus(StrEnum):
+    """Validation lifecycle status for a proposed memory candidate."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 class SideEffectType(StrEnum):
     """Classification of external side effects caused by a tool."""
 
@@ -82,7 +91,7 @@ class ModelFinishReason(StrEnum):
     ERROR = "error"
 
 
-# --- Immutable Data Records ---
+# --- Immutable Data Records with Contract Validation ---
 @dataclass(frozen=True)
 class ToolCallRequest:
     """Request from a model to invoke a specific tool."""
@@ -90,6 +99,12 @@ class ToolCallRequest:
     call_id: str
     tool_name: str
     arguments: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+
+    def __post_init__(self) -> None:
+        if not self.call_id.strip():
+            raise ValueError("ToolCallRequest.call_id must not be empty")
+        if not self.tool_name.strip():
+            raise ValueError("ToolCallRequest.tool_name must not be empty")
 
 
 @dataclass(frozen=True)
@@ -104,6 +119,14 @@ class ModelDecision:
     tokens_used: int = 0
     raw_response: Mapping[str, Any] | None = None
 
+    def __post_init__(self) -> None:
+        if not self.decision_id.strip():
+            raise ValueError("ModelDecision.decision_id must not be empty")
+        if not str(self.step_id).strip():
+            raise ValueError("ModelDecision.step_id must not be empty")
+        if self.tokens_used < 0:
+            raise ValueError(f"ModelDecision.tokens_used must be >= 0, got {self.tokens_used}")
+
 
 @dataclass(frozen=True)
 class ToolResult:
@@ -117,6 +140,18 @@ class ToolResult:
     result: Mapping[str, Any] | None = None
     error: str | None = None
     execution_time_ms: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not str(self.invocation_id).strip():
+            raise ValueError("ToolResult.invocation_id must not be empty")
+        if not self.tool_name.strip():
+            raise ValueError("ToolResult.tool_name must not be empty")
+        if not self.idempotency_key.strip():
+            raise ValueError("ToolResult.idempotency_key must not be empty")
+        if self.execution_time_ms < 0.0:
+            raise ValueError(
+                f"ToolResult.execution_time_ms must be >= 0.0, got {self.execution_time_ms}"
+            )
 
 
 @dataclass(frozen=True)
@@ -138,6 +173,32 @@ class MemoryRecord:
     access_count: int = 0
     version: int = 1
 
+    def __post_init__(self) -> None:
+        if not str(self.id).strip():
+            raise ValueError("MemoryRecord.id must not be empty")
+        if not str(self.namespace_id).strip():
+            raise ValueError("MemoryRecord.namespace_id must not be empty")
+        if not self.content.strip():
+            raise ValueError("MemoryRecord.content must not be empty")
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(
+                f"MemoryRecord.confidence must be between 0.0 and 1.0, got {self.confidence}"
+            )
+        if not (0.0 <= self.salience <= 1.0):
+            raise ValueError(
+                f"MemoryRecord.salience must be between 0.0 and 1.0, got {self.salience}"
+            )
+        if self.created_at.tzinfo is None:
+            raise ValueError("MemoryRecord.created_at must be timezone-aware (tzinfo is required)")
+        if self.updated_at.tzinfo is None:
+            raise ValueError("MemoryRecord.updated_at must be timezone-aware (tzinfo is required)")
+        if self.expires_at is not None and self.expires_at.tzinfo is None:
+            raise ValueError("MemoryRecord.expires_at must be timezone-aware when provided")
+        if self.access_count < 0:
+            raise ValueError(f"MemoryRecord.access_count must be >= 0, got {self.access_count}")
+        if self.version < 1:
+            raise ValueError(f"MemoryRecord.version must be >= 1, got {self.version}")
+
 
 @dataclass(frozen=True)
 class MemoryCandidate:
@@ -150,8 +211,23 @@ class MemoryCandidate:
     proposed_salience: float
     source_step_id: StepId
     rationale: str
-    validation_status: str  # PENDING, APPROVED, REJECTED
+    validation_status: CandidateStatus = CandidateStatus.PENDING
     rejection_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.candidate_id.strip():
+            raise ValueError("MemoryCandidate.candidate_id must not be empty")
+        if not str(self.namespace_id).strip():
+            raise ValueError("MemoryCandidate.namespace_id must not be empty")
+        if not self.content.strip():
+            raise ValueError("MemoryCandidate.content must not be empty")
+        if not str(self.source_step_id).strip():
+            raise ValueError("MemoryCandidate.source_step_id must not be empty")
+        if not (0.0 <= self.proposed_salience <= 1.0):
+            raise ValueError(
+                "MemoryCandidate.proposed_salience must be between 0.0 and 1.0, "
+                f"got {self.proposed_salience}"
+            )
 
 
 @dataclass(frozen=True)
@@ -165,6 +241,14 @@ class ContextItem:
     provenance_id: str
     token_cost: int
 
+    def __post_init__(self) -> None:
+        if not str(self.memory_id).strip():
+            raise ValueError("ContextItem.memory_id must not be empty")
+        if not self.content.strip():
+            raise ValueError("ContextItem.content must not be empty")
+        if self.token_cost < 0:
+            raise ValueError(f"ContextItem.token_cost must be >= 0, got {self.token_cost}")
+
 
 @dataclass(frozen=True)
 class ContextManifest:
@@ -177,6 +261,16 @@ class ContextManifest:
     total_tokens: int
     budget_limit: int
     compiled_prompt: str
+
+    def __post_init__(self) -> None:
+        if not self.manifest_id.strip():
+            raise ValueError("ContextManifest.manifest_id must not be empty")
+        if not str(self.step_id).strip():
+            raise ValueError("ContextManifest.step_id must not be empty")
+        if self.total_tokens < 0:
+            raise ValueError(f"ContextManifest.total_tokens must be >= 0, got {self.total_tokens}")
+        if self.budget_limit < 0:
+            raise ValueError(f"ContextManifest.budget_limit must be >= 0, got {self.budget_limit}")
 
 
 @dataclass(frozen=True)
@@ -193,6 +287,20 @@ class StepResult:
     tokens_consumed: int
     completed_at: datetime
 
+    def __post_init__(self) -> None:
+        if not str(self.step_id).strip():
+            raise ValueError("StepResult.step_id must not be empty")
+        if not str(self.run_id).strip():
+            raise ValueError("StepResult.run_id must not be empty")
+        if self.step_number < 0:
+            raise ValueError(f"StepResult.step_number must be >= 0, got {self.step_number}")
+        if self.memories_proposed < 0 or self.memories_committed < 0:
+            raise ValueError("Memory counts must be >= 0")
+        if self.tokens_consumed < 0:
+            raise ValueError(f"StepResult.tokens_consumed must be >= 0, got {self.tokens_consumed}")
+        if self.completed_at.tzinfo is None:
+            raise ValueError("StepResult.completed_at must be timezone-aware")
+
 
 @dataclass(frozen=True)
 class RunResult:
@@ -206,6 +314,18 @@ class RunResult:
     final_output: str | None
     trace_id: str
     error: str | None = None
+
+    def __post_init__(self) -> None:
+        if not str(self.run_id).strip():
+            raise ValueError("RunResult.run_id must not be empty")
+        if not str(self.namespace_id).strip():
+            raise ValueError("RunResult.namespace_id must not be empty")
+        if self.step_count < 0:
+            raise ValueError(f"RunResult.step_count must be >= 0, got {self.step_count}")
+        if self.total_tokens_consumed < 0:
+            raise ValueError(
+                f"RunResult.total_tokens_consumed must be >= 0, got {self.total_tokens_consumed}"
+            )
 
 
 # --- Typed Exceptions ---
@@ -300,6 +420,7 @@ class ToolProtocol(Protocol):
 __all__ = [
     "BranchId",
     "BudgetExceededError",
+    "CandidateStatus",
     "CheckpointId",
     "CompensationFailedError",
     "ContextItem",

@@ -11,14 +11,18 @@ import pytest
 from memory_aware_agent_harness.contracts import (
     ContextItem,
     ContextManifest,
+    MemoryId,
     MemoryKind,
     MemoryRecord,
     MemoryState,
     ModelDecision,
     ModelFinishReason,
+    NamespaceId,
     SideEffectType,
+    StepId,
     ToolCallRequest,
     ToolCallStatus,
+    ToolInvocationId,
     ToolResult,
 )
 
@@ -33,8 +37,8 @@ def frozen_utc_now() -> datetime:
 def sample_memory_record(frozen_utc_now: datetime) -> MemoryRecord:
     """Fixture providing a valid immutable MemoryRecord."""
     return MemoryRecord(
-        id="mem_01J9X001",
-        namespace_id="test_tenant_a",
+        id=MemoryId("mem_01J9X001"),
+        namespace_id=NamespaceId("test_tenant_a"),
         kind=MemoryKind.SEMANTIC,
         content="User prefers strict typing in Python 3.11+",
         state=MemoryState.ACTIVE,
@@ -54,7 +58,7 @@ def sample_memory_record(frozen_utc_now: datetime) -> MemoryRecord:
 def sample_context_manifest() -> ContextManifest:
     """Fixture providing an immutable ContextManifest."""
     item = ContextItem(
-        memory_id="mem_01J9X001",
+        memory_id=MemoryId("mem_01J9X001"),
         kind=MemoryKind.SEMANTIC,
         content="User prefers strict typing in Python 3.11+",
         rank_score=0.92,
@@ -64,9 +68,9 @@ def sample_context_manifest() -> ContextManifest:
     prompt = "<untrusted_memory id='mem_01J9X001'>User prefers strict typing</untrusted_memory>"
     return ContextManifest(
         manifest_id="man_01J9X002",
-        step_id="step_01J9X001",
+        step_id=StepId("step_01J9X001"),
         included_items=(item,),
-        excluded_item_ids=MappingProxyType({"mem_01J9X999": "EXCLUDED_BUDGET_EXCEEDED"}),
+        excluded_item_ids=MappingProxyType({MemoryId("mem_01J9X999"): "EXCLUDED_BUDGET_EXCEEDED"}),
         total_tokens=15,
         budget_limit=2000,
         compiled_prompt=prompt,
@@ -77,7 +81,7 @@ def sample_context_manifest() -> ContextManifest:
 def sample_tool_result() -> ToolResult:
     """Fixture providing an immutable ToolResult."""
     return ToolResult(
-        invocation_id="inv_01J9X003",
+        invocation_id=ToolInvocationId("inv_01J9X003"),
         tool_name="get_file_info",
         status=ToolCallStatus.COMPLETED,
         side_effect=SideEffectType.READ_ONLY,
@@ -98,7 +102,7 @@ def sample_model_decision() -> ModelDecision:
     )
     return ModelDecision(
         decision_id="dec_01J9X005",
-        step_id="step_01J9X001",
+        step_id=StepId("step_01J9X001"),
         finish_reason=ModelFinishReason.TOOL_CALL,
         content=None,
         tool_calls=(call,),
