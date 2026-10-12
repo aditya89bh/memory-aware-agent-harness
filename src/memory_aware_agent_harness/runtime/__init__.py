@@ -12,6 +12,10 @@ from memory_aware_agent_harness.runtime.cancellation import (
 )
 from memory_aware_agent_harness.runtime.fsm import RunFSM, StepFSM
 from memory_aware_agent_harness.runtime.guards import BudgetGuard
+from memory_aware_agent_harness.runtime.recovery import (
+    OrphanedRunError,
+    OrphanedRunRecoveryHandler,
+)
 from memory_aware_agent_harness.runtime.state import (
     LifecycleState,
     SystemClock,
@@ -23,6 +27,8 @@ __all__ = [
     "BudgetGuard",
     "CancellationListener",
     "LifecycleState",
+    "OrphanedRunError",
+    "OrphanedRunRecoveryHandler",
     "RunFSM",
     "StepFSM",
     "SystemClock",
