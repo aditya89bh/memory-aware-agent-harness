@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from memory_aware_agent_harness.contracts import (
+    DiagnosticListenerError,
     EventId,
     ModelDecision,
     ModelFinishReason,
@@ -173,9 +174,9 @@ def test_diagnostic_event_emitter_error_handling() -> None:
     e = emitter_lenient.emit(RuntimeEventType.RUN_STARTED, run_id=RunId("r_safe"))
     assert e.run_id == "r_safe"
 
-    # Strict emitter re-raises listener exceptions
+    # Strict emitter re-raises listener exceptions as DiagnosticListenerError
     emitter_strict = DiagnosticEventEmitter(strict=True, listeners=[_FailingListener()])
-    with pytest.raises(RuntimeError, match="Listener exploded"):
+    with pytest.raises(DiagnosticListenerError, match="Listener exploded"):
         emitter_strict.emit(RuntimeEventType.RUN_STARTED, run_id=RunId("r_strict"))
 
 
@@ -277,3 +278,84 @@ def test_diagnostic_hook_callbacks_invoked() -> None:
     assert "model_responded" in hook.calls
     assert "step_completed" in hook.calls
     assert "run_terminated" in hook.calls
+
+
+def test_strict_diagnostic_listener_failure_in_step_returns_structured_failure() -> None:
+    """P1-M5: Strict listener failure during step execution yields structured FAILED RunResult."""
+
+    class _FailingStepListener(RuntimeEventListener):
+        def on_event(self, event: RuntimeEvent) -> None:
+            if event.event_type == RuntimeEventType.MODEL_INVOKED:
+                raise ValueError("Step listener failure")
+
+    runtime = AgentRuntime(
+        model=FakeModelAdapter(),
+        event_listeners=[_FailingStepListener()],
+        strict_diagnostics=True,
+    )
+    result = runtime.run("Task with failing step listener", namespace_id=NamespaceId("ns_diag1"))
+
+    assert result.status == RunStatus.FAILED
+    assert result.failure_details is not None
+    assert result.failure_details.error_code == "DIAGNOSTIC_LISTENER_FAILURE"
+    assert result.failure_details.error_type == "DiagnosticListenerError"
+    assert "Step listener failure" in result.failure_details.message
+
+
+def test_strict_diagnostic_listener_failure_on_run_started_returns_structured_failure() -> None:
+    """P1-M5: Strict listener failure on RUN_STARTED yields structured FAILED RunResult."""
+
+    class _FailingStartListener(RuntimeEventListener):
+        def on_event(self, event: RuntimeEvent) -> None:
+            if event.event_type == RuntimeEventType.RUN_STARTED:
+                raise RuntimeError("Start listener failure")
+
+    runtime = AgentRuntime(
+        model=FakeModelAdapter(),
+        event_listeners=[_FailingStartListener()],
+        strict_diagnostics=True,
+    )
+    result = runtime.run("Task with start listener failure", namespace_id=NamespaceId("ns_diag2"))
+
+    assert result.status == RunStatus.FAILED
+    assert result.failure_details is not None
+    assert result.failure_details.error_code == "DIAGNOSTIC_LISTENER_FAILURE"
+    assert "Start listener failure" in result.failure_details.message
+
+
+def test_strict_diagnostic_listener_failure_on_run_terminated_returns_structured_outcome() -> None:
+    """P1-M5: Strict listener failure on RUN_TERMINATED does not crash and returns RunResult."""
+
+    class _FailingTerminatedListener(RuntimeEventListener):
+        def on_event(self, event: RuntimeEvent) -> None:
+            if event.event_type == RuntimeEventType.RUN_TERMINATED:
+                raise RuntimeError("Terminated listener failure")
+
+    runtime = AgentRuntime(
+        model=FakeModelAdapter(),
+        event_listeners=[_FailingTerminatedListener()],
+        strict_diagnostics=True,
+    )
+    result = runtime.run("Task with term listener failure", namespace_id=NamespaceId("ns_diag3"))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.step_count == 1
+
+
+def test_non_strict_diagnostic_listener_failure_allows_other_listeners() -> None:
+    """P1-M5: Non-strict listener failures are logged and do not block other listeners."""
+
+    class _BrokenListener(RuntimeEventListener):
+        def on_event(self, event: RuntimeEvent) -> None:
+            raise RuntimeError("Broken listener ignored")
+
+    collector = EventCollector()
+    runtime = AgentRuntime(
+        model=FakeModelAdapter(),
+        event_listeners=[_BrokenListener(), collector],
+        strict_diagnostics=False,
+    )
+    result = runtime.run("Task with non-strict listener", namespace_id=NamespaceId("ns_diag4"))
+
+    assert result.status == RunStatus.COMPLETED
+    assert len(collector.events) > 0

@@ -196,4 +196,3 @@ def test_agent_runtime_pre_execution_validation() -> None:
             namespace_id=NamespaceId("ns_01"),
             cancellation_token="not_a_token",  # type: ignore[arg-type]
         )
-

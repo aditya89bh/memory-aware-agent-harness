@@ -955,6 +955,47 @@ class InvalidStateTransitionError(HarnessError):
         self.to_state = to_state
 
 
+class DiagnosticListenerError(HarnessError, RuntimeError):
+    """Raised when a diagnostic event listener fails under strict mode."""
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        listener_name: str | None = None,
+        event_type: str | None = None,
+        original_exc: Exception | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if listener_name is not None:
+            d["listener_name"] = listener_name
+        if event_type is not None:
+            d["event_type"] = event_type
+        if original_exc is not None:
+            d["original_error"] = str(original_exc)
+
+        eff_msg = message or (
+            f"Diagnostic listener {listener_name!r} failed on event {event_type!r}: {original_exc}"
+            if listener_name and event_type
+            else "Diagnostic listener execution failed"
+        )
+        super().__init__(
+            eff_msg,
+            error_code="DIAGNOSTIC_LISTENER_FAILURE",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.listener_name = listener_name
+        self.event_type = event_type
+        self.original_exc = original_exc
+
+
 class CancellationToken:
     """Thread-safe cooperative cancellation token supporting live signaling and callbacks.
 
@@ -2031,6 +2072,7 @@ __all__ = [
     "ContextItem",
     "ContextManifest",
     "DeadlineExceededError",
+    "DiagnosticListenerError",
     "EventId",
     "ExecutionCancelledError",
     "FailureDetails",

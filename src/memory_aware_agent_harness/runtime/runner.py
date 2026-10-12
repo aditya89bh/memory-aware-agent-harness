@@ -19,6 +19,7 @@ from memory_aware_agent_harness.contracts import (
     ContextItem,
     ContextManifest,
     DeadlineExceededError,
+    DiagnosticListenerError,
     ExecutionCancelledError,
     FailureDetails,
     IdGeneratorPort,
@@ -33,6 +34,7 @@ from memory_aware_agent_harness.contracts import (
     RunBudgets,
     RunId,
     RunResult,
+    RunStatus,
     SideEffectType,
     StepId,
     StepResult,
@@ -204,114 +206,147 @@ class AgentRuntime:
         cancellation_listener = CancellationListener(state)
         step_compiler = StepOutcomeCompiler(state)
         result_builder = RunResultBuilder(state)
-
-        state.begin_run()
-        self.event_emitter.emit(
-            RuntimeEventType.RUN_STARTED,
-            run_id=state.run_id,
-            payload={"task": task, "namespace_id": str(namespace_id)},
-        )
         final_output: str | None = None
 
-        while not state.is_terminal:
-            # Check cooperative cancellation
-            if cancellation_listener.abort_if_cancelled():
-                break
-
-            # Check budget exhaustion before commencing next step
-            if not budget_guard.enforce(state):
-                break
-
-            step_id, step_fsm = state.begin_step()
+        try:
+            state.begin_run()
             self.event_emitter.emit(
-                RuntimeEventType.STEP_STARTED,
+                RuntimeEventType.RUN_STARTED,
                 run_id=state.run_id,
-                step_id=step_id,
-                phase=StepState.NOT_STARTED,
+                payload={"task": task, "namespace_id": str(namespace_id)},
             )
 
-            try:
-                step_result = self._execute_step(
-                    state=state,
+            while not state.is_terminal:
+                # Check cooperative cancellation
+                if cancellation_listener.abort_if_cancelled():
+                    break
+
+                # Check budget exhaustion before commencing next step
+                if not budget_guard.enforce(state):
+                    break
+
+                step_id, step_fsm = state.begin_step()
+                self.event_emitter.emit(
+                    RuntimeEventType.STEP_STARTED,
+                    run_id=state.run_id,
                     step_id=step_id,
-                    step_fsm=step_fsm,
-                    task=task,
-                    step_compiler=step_compiler,
-                    budget_guard=budget_guard,
-                    cancellation_listener=cancellation_listener,
+                    phase=StepState.NOT_STARTED,
                 )
-            except BudgetExceededError as exc:
-                if not step_fsm.is_terminal:
-                    step_fsm.transition_to(StepState.FAILED, reason=str(exc))
-                if not state.is_terminal:
-                    state.failure_details = exc.to_failure_details(step_id=step_id)
-                    state.exhaust_budget(reason=str(exc))
-                break
-            except DeadlineExceededError as exc:
-                if not step_fsm.is_terminal:
-                    step_fsm.transition_to(StepState.FAILED, reason=str(exc))
-                if not state.is_terminal:
-                    state.failure_details = FailureDetails(
-                        error_type="DeadlineExceededError",
+
+                try:
+                    step_result = self._execute_step(
+                        state=state,
+                        step_id=step_id,
+                        step_fsm=step_fsm,
+                        task=task,
+                        step_compiler=step_compiler,
+                        budget_guard=budget_guard,
+                        cancellation_listener=cancellation_listener,
+                    )
+                except BudgetExceededError as exc:
+                    if not step_fsm.is_terminal:
+                        step_fsm.transition_to(StepState.FAILED, reason=str(exc))
+                    if not state.is_terminal:
+                        state.failure_details = exc.to_failure_details(step_id=step_id)
+                        state.exhaust_budget(reason=str(exc))
+                    break
+                except DeadlineExceededError as exc:
+                    if not step_fsm.is_terminal:
+                        step_fsm.transition_to(StepState.FAILED, reason=str(exc))
+                    if not state.is_terminal:
+                        state.failure_details = exc.to_failure_details(step_id=step_id)
+                        state.exhaust_budget(reason=str(exc))
+                    break
+                except ExecutionCancelledError as exc:
+                    dispatcher = AbortDispatcher(state)
+                    dispatcher.dispatch_cancellation(reason=str(exc))
+                    break
+                except PolicyViolationError as exc:
+                    dispatcher = AbortDispatcher(state)
+                    dispatcher.dispatch_policy_abort(exc)
+                    break
+                except DiagnosticListenerError as exc:
+                    if not step_fsm.is_terminal:
+                        step_fsm.transition_to(StepState.FAILED, reason=str(exc))
+                    if not state.is_terminal:
+                        state.fail(exc.to_failure_details(step_id=step_id), reason=str(exc))
+                    break
+                except Exception as exc:
+                    failure = FailureDetails(
+                        error_type=type(exc).__name__,
                         message=str(exc),
                         step_id=step_id,
-                        error_code="DEADLINE_EXCEEDED",
+                        error_code="STEP_EXECUTION_FAILURE",
                     )
-                    state.exhaust_budget(reason=str(exc))
-                break
-            except ExecutionCancelledError as exc:
-                dispatcher = AbortDispatcher(state)
-                dispatcher.dispatch_cancellation(reason=str(exc))
-                break
-            except PolicyViolationError as exc:
-                dispatcher = AbortDispatcher(state)
-                dispatcher.dispatch_policy_abort(exc)
-                break
-            except Exception as exc:
+                    if not step_fsm.is_terminal:
+                        step_fsm.transition_to(StepState.FAILED, reason=str(exc))
+                    state.fail(failure, reason=str(exc))
+                    break
+
+                # Record step result into execution history
+                state.record_step_result(step_result)
+
+                # Check budget exhaustion after step completion
+                if not budget_guard.enforce(state):
+                    break
+
+                # Handle model decision outcome
+                if step_result.decision.finish_reason == ModelFinishReason.STOP:
+                    if not budget_guard.enforce(state):
+                        break
+                    final_output = step_result.decision.content
+                    state.complete(reason="Task completed by model")
+                    break
+                elif step_result.decision.finish_reason == ModelFinishReason.ERROR:
+                    failure = step_result.decision.failure_details or FailureDetails(
+                        error_type="ModelDecisionError",
+                        message=(
+                            step_result.decision.content or "Model returned error finish reason"
+                        ),
+                        step_id=step_id,
+                        error_code="MODEL_ERROR",
+                    )
+                    state.fail(failure, reason=failure.message)
+                    break
+        except DiagnosticListenerError as exc:
+            if not state.is_terminal:
+                state.fail(exc.to_failure_details(step_id=state.current_step_id), reason=str(exc))
+        except Exception as exc:
+            if not state.is_terminal:
                 failure = FailureDetails(
                     error_type=type(exc).__name__,
                     message=str(exc),
-                    step_id=step_id,
-                    error_code="STEP_EXECUTION_FAILURE",
+                    step_id=state.current_step_id,
+                    error_code="RUN_EXECUTION_FAILURE",
                 )
-                if not step_fsm.is_terminal:
-                    step_fsm.transition_to(StepState.FAILED, reason=str(exc))
                 state.fail(failure, reason=str(exc))
-                break
 
-            # Record step result into execution history
-            state.record_step_result(step_result)
-
-            # Check budget exhaustion after step completion
-            if not budget_guard.enforce(state):
-                break
-
-            # Handle model decision outcome
-            if step_result.decision.finish_reason == ModelFinishReason.STOP:
-                if not budget_guard.enforce(state):
-                    break
-                final_output = step_result.decision.content
-                state.complete(reason="Task completed by model")
-                break
-            elif step_result.decision.finish_reason == ModelFinishReason.ERROR:
-                failure = step_result.decision.failure_details or FailureDetails(
-                    error_type="ModelDecisionError",
-                    message=step_result.decision.content or "Model returned error finish reason",
-                    step_id=step_id,
-                    error_code="MODEL_ERROR",
+        try:
+            self.event_emitter.emit(
+                RuntimeEventType.RUN_TERMINATED,
+                run_id=state.run_id,
+                payload={
+                    "status": str(state.status),
+                    "step_count": state.step_count,
+                    "tokens_consumed": state.cumulative_tokens.total_tokens,
+                },
+            )
+        except DiagnosticListenerError as exc:
+            if not state.is_terminal:
+                state.fail(exc.to_failure_details(step_id=state.current_step_id), reason=str(exc))
+            elif state.failure_details is None and state.status != RunStatus.COMPLETED:
+                state.failure_details = exc.to_failure_details(step_id=state.current_step_id)
+        except Exception as exc:
+            if not state.is_terminal:
+                state.fail(
+                    FailureDetails(
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                        step_id=state.current_step_id,
+                        error_code="RUN_TERMINATED_FAILURE",
+                    ),
+                    reason=str(exc),
                 )
-                state.fail(failure, reason=failure.message)
-                break
-
-        self.event_emitter.emit(
-            RuntimeEventType.RUN_TERMINATED,
-            run_id=state.run_id,
-            payload={
-                "status": str(state.status),
-                "step_count": state.step_count,
-                "tokens_consumed": state.cumulative_tokens.total_tokens,
-            },
-        )
         return result_builder.build(final_output=final_output)
 
     def _execute_step(
@@ -349,9 +384,7 @@ class AgentRuntime:
         self._phase_5_to_7_lifecycle_stubs(state, step_id, step_fsm, cancellation_listener)
 
         # Phase 8: Outcome compilation
-        return self._phase_8_compile_outcome(
-            state, step_id, decision, tool_results, step_compiler
-        )
+        return self._phase_8_compile_outcome(state, step_id, decision, tool_results, step_compiler)
 
     def _phase_1_retrieve(
         self,
@@ -415,9 +448,7 @@ class AgentRuntime:
         )
         cancellation_listener.check()
 
-        compiled_prompt = compile_execution_prompt(
-            task, state.step_history, max_history_steps=10
-        )
+        compiled_prompt = compile_execution_prompt(task, state.step_history, max_history_steps=10)
         prompt_token_est = len(compiled_prompt.split())
 
         return ContextManifest(

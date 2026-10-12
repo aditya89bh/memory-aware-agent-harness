@@ -15,6 +15,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from memory_aware_agent_harness.contracts import (
     ClockPort,
+    DiagnosticListenerError,
     EventId,
     FrozenDict,
     IdGeneratorPort,
@@ -259,9 +260,24 @@ class DiagnosticEventEmitter:
                 listener.on_event(event)
             except Exception as exc:
                 if self._strict:
-                    raise
+                    raise DiagnosticListenerError(
+                        listener_name=type(listener).__name__,
+                        event_type=event.event_type.value,
+                        original_exc=exc,
+                    ) from exc
                 logger.warning(
                     "Error in diagnostic event listener %s: %s",
                     type(listener).__name__,
                     exc,
                 )
+
+
+__all__ = [
+    "DiagnosticEventEmitter",
+    "DiagnosticHook",
+    "DiagnosticListenerError",
+    "EventCollector",
+    "RuntimeEvent",
+    "RuntimeEventListener",
+    "RuntimeEventType",
+]

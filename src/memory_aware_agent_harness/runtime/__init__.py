@@ -14,6 +14,7 @@ from memory_aware_agent_harness.runtime.cancellation import (
 from memory_aware_agent_harness.runtime.events import (
     DiagnosticEventEmitter,
     DiagnosticHook,
+    DiagnosticListenerError,
     EventCollector,
     RuntimeEvent,
     RuntimeEventListener,
@@ -41,6 +42,7 @@ __all__ = [
     "CancellationListener",
     "DiagnosticEventEmitter",
     "DiagnosticHook",
+    "DiagnosticListenerError",
     "EventCollector",
     "FakeModelAdapter",
     "LifecycleState",
