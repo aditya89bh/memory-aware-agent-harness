@@ -74,11 +74,29 @@ class AgentRuntime:
         strict_diagnostics: bool = False,
     ) -> None:
         self.model = model
-        self.tools: tuple[ToolProtocol, ...] = tuple(tools) if tools is not None else ()
+        tools_list: list[ToolProtocol] = []
+        seen_tool_names: set[str] = set()
+        if tools is not None:
+            for t in tools:
+                if (
+                    not getattr(t, "name", None)
+                    or not isinstance(t.name, str)
+                    or not t.name.strip()
+                ):
+                    raise ValueError(f"Tool must have a non-empty name, got {t!r}")
+                if t.name in seen_tool_names:
+                    raise ValueError(f"Duplicate tool registered: {t.name!r}")
+                seen_tool_names.add(t.name)
+                tools_list.append(t)
+        self.tools: tuple[ToolProtocol, ...] = tuple(tools_list)
         self.tools_by_name: dict[str, ToolProtocol] = {t.name: t for t in self.tools}
         self.memory_store = memory_store
         self.clock = clock if clock is not None else SystemClock()
         self.id_generator = id_generator if id_generator is not None else SystemIdGenerator()
+        if budgets is not None and not isinstance(budgets, RunBudgets):
+            raise TypeError(
+                f"budgets must be an instance of RunBudgets, got {type(budgets).__name__}"
+            )
         self.default_budgets = budgets if budgets is not None else RunBudgets()
         self.event_emitter = DiagnosticEventEmitter(
             clock=self.clock,
@@ -108,8 +126,21 @@ class AgentRuntime:
         Returns:
             Terminal RunResult with full audit, token accounting, and final output.
         """
-        if not task.strip():
-            raise ValueError("Task description must not be empty")
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("Task description must not be empty or whitespace")
+        if not namespace_id or not str(namespace_id).strip():
+            raise ValueError("Namespace ID must not be empty or whitespace")
+        if run_id is not None and not str(run_id).strip():
+            raise ValueError("Run ID must not be empty or whitespace")
+        if budgets is not None and not isinstance(budgets, RunBudgets):
+            raise TypeError(
+                f"budgets must be an instance of RunBudgets, got {type(budgets).__name__}"
+            )
+        if cancellation_token is not None and not isinstance(cancellation_token, CancellationToken):
+            raise TypeError(
+                f"cancellation_token must be an instance of CancellationToken, "
+                f"got {type(cancellation_token).__name__}"
+            )
 
         effective_run_id = run_id
         if effective_run_id is None:

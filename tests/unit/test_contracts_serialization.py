@@ -827,7 +827,7 @@ def test_r2_frozendict_inherited_methods_mutation_defense() -> None:
 
     # 5. Verify FrozenDict is a Mapping but NOT a dict subclass (resolving R-2)
     assert isinstance(fd, Mapping)
-    assert not isinstance(fd, dict)
+    assert not issubclass(FrozenDict, dict)
 
     # 6. Additional mutating methods explicitly raise TypeError
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
