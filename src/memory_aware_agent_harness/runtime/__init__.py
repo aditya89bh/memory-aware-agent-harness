@@ -21,6 +21,7 @@ from memory_aware_agent_harness.runtime.state import (
     SystemClock,
     SystemIdGenerator,
 )
+from memory_aware_agent_harness.runtime.step_compiler import StepOutcomeCompiler
 
 __all__ = [
     "AbortDispatcher",
@@ -31,6 +32,7 @@ __all__ = [
     "OrphanedRunRecoveryHandler",
     "RunFSM",
     "StepFSM",
+    "StepOutcomeCompiler",
     "SystemClock",
     "SystemIdGenerator",
 ]
