@@ -1,8 +1,8 @@
 # ROADMAP.md: 13-Phase Master Development Roadmap
 
-**Status:** REVISED (Phase 0 Independent Review Remediation)  
+**Status:** REVISED (Phase 0 Independent Review Remediation Round 2)  
 **Governing Rule:** No application or runtime implementation until `SPEC.md`, `ARCHITECTURE.md`, and `ROADMAP.md` are jointly approved and locked.  
-**Planning Target:** 352 meaningful commits across 13 phases (acceptable range: 300–360 commits). *Target, not an artificial quota.*
+**Planning Target:** 340 meaningful commits across 13 phases (agreed planning range: 300–350 commits). *Target, not an artificial quota.*
 
 ---
 
@@ -10,58 +10,64 @@
 
 | Phase | Focus Area | Target Commits | Cumulative Commits | Milestone / Release Gate |
 |---|---|:---:|:---:|---|
-| **Phase 0** | Foundation, Specs, Package Setup & Remediation | 28 | 28 | Project skeleton, typed contracts, & approved specs |
-| **Phase 1** | Core Runtime & Lifecycle | 30 | 58 | FSM execution & budget bounds |
-| **Phase 2** | Memory Model & Storage Abstractions | 34 | 92 | Unified SQLite WAL persistence |
-| **Phase 3** | Retrieval, Ranking, Context Compiler | 34 | 126 | Multi-signal ranker & fenced context |
-| **Phase 4** | Memory Writes, Consolidation, Forgetting | 30 | 156 | Quarantined writes & verifiable deletion |
-| **Phase 5** | Tool Runtime & Routing | 26 | 182 | **v0.1.0 (Core Lifecycle MVP)** |
-| **Phase 6** | Checkpointing, Resume, Rollback, Branching | 26 | 208 | **v0.2.0 (Continuity & Recovery)** |
-| **Phase 7** | Tracing, Provenance, Event Model | 28 | 236 | Lineage graph & PII redaction |
-| **Phase 8** | Replay & Deterministic Hooks | 24 | 260 | **v0.3.0 (Governance & Replay)** |
-| **Phase 9** | Evaluation Framework & Metrics | 26 | 286 | 3-baseline comparison runner |
-| **Phase 10** | Benchmarks & Regression Suites | 22 | 308 | **v0.4.0 (Evaluation & Benchmarks)** |
-| **Phase 11** | Integrations & Realistic Demos | 20 | 328 | 3 runnable end-to-end scenarios |
-| **Phase 12** | Hardening, Docs, Packaging, Release | 24 | 352 | **v1.0.0 (Production Hardened)** |
-| **Total** | | **352** | | |
+| **Phase 0** | Foundation, Specs, Package Setup & Remediation | 31 | 31 | Project skeleton, typed contracts, & approved specs |
+| **Phase 1** | Core Runtime & Lifecycle | 28 | 59 | FSM execution & budget bounds |
+| **Phase 2** | Memory Model & Storage Abstractions | 32 | 91 | Unified SQLite WAL persistence |
+| **Phase 3** | Retrieval, Ranking, Context Compiler | 32 | 123 | Multi-signal ranker & fenced context |
+| **Phase 4** | Memory Writes, Consolidation, Forgetting | 28 | 151 | Quarantined writes & verifiable deletion |
+| **Phase 5** | Tool Runtime & Routing | 25 | 176 | **v0.1.0 (Core Lifecycle MVP)** |
+| **Phase 6** | Checkpointing, Resume, Rollback, Branching | 25 | 201 | **v0.2.0 (Continuity & Recovery)** |
+| **Phase 7** | Tracing, Provenance, Event Model | 26 | 227 | Lineage graph & PII redaction |
+| **Phase 8** | Replay & Deterministic Hooks | 24 | 251 | **v0.3.0 (Governance & Replay)** |
+| **Phase 9** | Evaluation Framework & Metrics | 25 | 276 | 3-baseline comparison runner |
+| **Phase 10** | Benchmarks & Regression Suites | 22 | 298 | **v0.4.0 (Evaluation & Benchmarks)** |
+| **Phase 11** | Integrations & Realistic Demos | 20 | 318 | 3 runnable end-to-end scenarios |
+| **Phase 12** | Hardening, Docs, Packaging, Release | 22 | 340 | **v1.0.0 (Production Hardened)** |
+| **Total** | | **340** | | |
 
 ---
 
 ## 2. Accounting of Phase 0 Commits
 
-### 2.1 Baseline Phase 0 Commits (Commits 1 to 16)
-The following 16 baseline commits established Phase 0 foundation:
+### 2.1 Baseline Phase 0 Commits (Commits 1 to 17)
+The following 17 baseline commits established the Phase 0 foundation up to published commit `66481a9`:
 1. `9535535`: `docs: add draft spec specification`
 2. `45b66c8`: `docs: add draft architecture specification`
 3. `96d59df`: `docs: add draft roadmap specification`
-4. `69c2794`: `docs(spec): reconcile lifecycle, storage contracts, and retention`
-5. `5dbafdf`: `docs(architecture): specify deep immutability, compensation, and DDL`
-6. `f3ec6cf`: `docs(roadmap): expand to 13-phase development plan with release milestones`
-7. `475b7f7`: `docs(adr): add architecture decision records ADR-001 through ADR-010`
-8. `2b26090`: `docs(security): define threat model, injection defenses, and boundaries`
-9. `b9bfdd2`: `chore(packaging): configure pyproject.toml with toolchain settings`
-10. `1bf1660`: `chore(lint): configure ruff rules and pre-commit hooks`
-11. `2a373fe`: `chore(types): configure strict mypy settings`
-12. `ffab94e`: `chore(package): initialize package skeleton and version metadata`
-13. `2f9f116`: `feat(contracts): define public type contracts, protocols, and exceptions`
-14. `279aa28`: `test(skeleton): create pytest directory structure and fixtures`
-15. `b9d21ee`: `ci(github): add workflow for linting, typing, and smoke testing`
-16. `66481a9`: `docs(report): complete phase 0 report and smoke validation`
+4. `78528bc`: `docs(spec): reconcile execution FSM, unified storage, and retention boundaries`
+5. `a98153b`: `docs(architecture): specify deep immutability, fallible compensation, and SQLite WAL schema`
+6. `0cf28f0`: `docs(roadmap): expand 13-phase master plan with commit allocation and release gates`
+7. `9836f57`: `docs(adr): add architecture decision records ADR-0001 through ADR-010`
+8. `837b8cb`: `docs(security): establish security architecture, threat model, and untrusted boundaries`
+9. `818bdf2`: `build: create initial pyproject.toml and project metadata`
+10. `d82d327`: `chore(lint): configure ruff linting, formatting, and pre-commit hooks`
+11. `9752316`: `chore(types): configure strict mypy static type checking`
+12. `e69b19e`: `init(pkg): create package skeleton and version declaration`
+13. `6001e12`: `feat(contracts): define public types, immutable data models, exceptions, and ports`
+14. `5c39352`: `test(fixtures): establish test directory structure, fixtures, and contracts smoke tests`
+15. `816f696`: `ci: add github actions workflow for linting, typing, testing, and packaging`
+16. `dd93549`: `build(verify): validate package build, packaging smoke tests, and Phase 0 report`
+17. `66481a9`: `ci(fix): scope ruff checks to src and tests and synchronize architecture code block`
 
-### 2.2 Independent Review Remediation Tasks (Commits 17 to 28)
+### 2.2 Independent Review Remediation Round 1 Commits (Commits 18 to 28)
 Addressing Claude Code independent architecture review findings (H-01 through H-07, and Medium findings):
-- **Commit 17 (Task 0.17):** Ingest independent review findings and formulate 12-task remediation plan.
-- **Commit 18 (Task 0.18):** `fix(contracts): add NewType identifiers, CandidateStatus, and validation rules` (PEP 484 NewType IDs, bounds validation).
-- **Commit 19 (Task 0.19):** `feat(contracts): implement deep immutability, normalization, and serialization` (Resolves H-01: recursive freezing, alias defense, canonical JSON roundtrips).
-- **Commit 20 (Task 0.20):** `feat(contracts): define FSM states, transition matrix, and execution contexts` (Resolves H-02, H-03, H-04: StepState, transition tables, RunBudgets, TokenUsage, contexts, Clock/Id ports).
-- **Commit 21 (Task 0.21):** `feat(replay): add deterministic test doubles for clock and id generator` (Resolves H-03: DeterministicClock and DeterministicIdGenerator).
-- **Commit 22 (Task 0.22):** `docs(spec): reconcile rollback semantics, erasure propagation, and threat model` (Resolves H-05, H-06, H-07: mutating write rollback, erasure propagation, XML escaping, MemoryOrigin).
-- **Commit 23 (Task 0.23):** `docs(architecture): update FSM, step commit protocol, and prune duplicate code` (Resolves H-02, H-04, H-05, ADR-0006/8/10/11 updates).
-- **Commit 24 (Task 0.24):** `docs(roadmap): update Phase 0 remediation accounting and milestone gates` (This task: master plan accounting).
-- **Commit 25 (Task 0.25):** `chore(license): add Apache-2.0 license and fix packaging metadata` (Root LICENSE, pyproject metadata).
-- **Commit 26 (Task 0.26):** `chore(ci): align ruff configuration and add wheel installation smoke test` (Pre-commit alignment, wheel smoke test in CI).
-- **Commit 27 (Task 0.27):** `test(remediation): add comprehensive negative-path and failure test suite` (Negative contract tests, crash boundaries, budget bounds).
-- **Commit 28 (Task 0.28):** `docs(report): compile independent review remediation matrix and validation evidence` (Final matrix and Phase 0 completion report).
+18. `fa11fd1`: `fix(contracts): add NewType identifiers, CandidateStatus, and validation rules` (M-01 through M-05)
+19. `608046a`: `feat(contracts): implement deep immutability, normalization, and serialization` (H-01 initial attempt)
+20. `5a85a4d`: `feat(contracts): define FSM states, transition matrix, and execution contexts` (H-02, H-03, H-04)
+21. `3d02e60`: `feat(replay): add deterministic test doubles for clock and id generator` (H-03 deterministic doubles)
+22. `7e7457d`: `docs(spec): reconcile rollback semantics, erasure propagation, and threat model` (H-05, H-06, H-07)
+23. `4577952`: `docs(architecture): update FSM, step commit protocol, and prune duplicate code` (H-02, H-04, H-05, M-06)
+24. `1a27416`: `docs(roadmap): update Phase 0 remediation accounting and milestone gates` (M-11)
+25. `cb4c4da`: `chore(license): add Apache-2.0 license and fix packaging metadata` (M-07)
+26. `98b414f`: `chore(ci): align ruff configuration and add wheel installation smoke test` (M-08, M-09)
+27. `dcf1ebe`: `test(remediation): add comprehensive negative-path and failure test suite` (M-10)
+28. `8deb860`: `docs(report): compile independent review remediation matrix and validation evidence` (Round 1 report)
+
+### 2.3 Independent Review Remediation Round 2 Commits (Commits 29 to 31)
+Targeted remediation following independent reproduction of H-01, H-03, and N-01:
+29. `a2b751b`: `fix(contracts): replace MappingProxyType with FrozenDict and harden serialization` (H-01 complete fix: hash, deepcopy, pickle, asdict, UTC equivalence, NaN/Inf and invalid metadata rejection)
+30. `12d05b6`: `feat(contracts): require execution contexts, integrate token usage and failure details` (H-03 complete fix: mandatory contexts, cancellation/deadline semantics, TokenUsage/FailureDetails integration, structured exception fields)
+31. `HEAD`: `docs(remediation): reconcile git commit history and audit matrix for review round 2` (N-01 complete fix: git log synchronization, finding classifications, roadmap 300–350 reconciliation)
 
 ---
 
