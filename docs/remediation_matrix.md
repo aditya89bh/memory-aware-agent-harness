@@ -73,23 +73,40 @@ Every independent review finding is classified into one of three explicit status
 
 ---
 
-## 6. Summary of Status Classifications
+## 6. Phase 1 Independent Audit Findings Matrix (P1-H1, P1-H2, P1-M1 through P1-M6)
 
-| Classification | Count | Finding IDs |
-|---|:---:|---|
-| **RESOLVED** | 20 | H-01, H-02, H-03, N-01, R-1, R-2, R-3, R-4, M-01, M-02, M-03, M-06, M-07, M-11, D-01, D-02, D-03, D-04, D-05, D-06 |
-| **OPEN** | 0 | None (All Phase 0 & Phase 1 scheduled findings fully resolved) |
-| **SPECIFIED / DEFERRED** | 9 | H-04 (Phase 2 & 5), H-05 (Phase 6), H-06 (Phase 4), H-07 (Phase 3), M-04 (Phase 2), M-05 (Phase 2), M-08 (Phase 2 & 8), M-09 (Phase 2 & 7), M-10 (Phase 9) |
-| **Total Tracked Findings** | **29** | Exact original taxonomy preserved without renumbering or merging. |
+| Finding ID | Title & Summary | Status / Category | Remediation Details & Implementation State | Commits | Verification Evidence & Scope Limits |
+|---|---|:---:|---|:---:|---|
+| **P1-H1** | **Model observation feedback**<br>Model decisions and tool observations were not fed back to subsequent model calls, preventing multi-step dynamic decision branching. | **RESOLVED** | Implemented `compile_execution_prompt()` with a bounded structured execution history window (`max_history_steps=10`) providing previous model decisions and tool observations to subsequent steps. Updated CLI `--scenario tool` to dynamically compute final answers from calculator tool observations. Added comprehensive behavioral integration tests. | `65e3158` | `tests/integration/test_observation_feedback.py`: 3 tests verifying observation-dependent model decisions, dynamic branching, failure recovery, and bounded history windowing. |
+| **P1-H2** | **Correct token and time budget enforcement**<br>Runs reported COMPLETED even when budgets were exceeded; missing deadline propagation and immediate post-call overrun detection. | **RESOLVED** | Enforced strict budget bounds before and after every model and tool call and at step completion. Overruns (including 100x token overruns and wall-clock overruns) immediately halt execution with `RunStatus.BUDGET_EXHAUSTED` and structured `FailureDetails`, never `COMPLETED`. Passed deadlines and live cancellation tokens through `ModelCallContext` and `ToolCallContext`. | `65e3158` | `tests/unit/test_budget_enforcement_strict.py`: 5 tests verifying 100x token overrun handling, wall-clock budget breaches, deadline propagation, and never reporting COMPLETED on budget exhaustion. |
+| **P1-M1** | **Immediate token usage recording**<br>Token usage was only recorded at step outcome compilation, losing accounting on subsequent error or cancellation paths. | **RESOLVED** | Recorded model token usage in `LifecycleState` immediately upon model return via `state.record_tokens()`, ensuring monotonic accounting across subsequent cancellation, budget exhaustion, or tool failure branches. | `65e3158` | `tests/unit/test_budget_enforcement_strict.py`: `test_immediate_token_recording_on_subsequent_error`. |
+| **P1-M2** | **Tool execution outcomes and side-effect uncertainty**<br>Mutating tools that failed were treated as unapplied; run results omitted tool invocation history. | **RESOLVED** | Failing mutating tools (`IDEMPOTENT_WRITE`, `NON_IDEMPOTENT_WRITE`) are explicitly recorded as `ToolCallStatus.OUTCOME_UNKNOWN` with `error_code="SIDE_EFFECT_UNCERTAIN"`. Added `step_history` and `tool_results` summaries to `RunResult` and `LifecycleState`. | `65e3158` | `tests/unit/test_budget_enforcement_strict.py`: `test_failing_mutating_tool_flags_outcome_unknown_and_uncertainty`; `tests/integration/test_runtime_loop_e2e.py`. |
+| **P1-M3** | **Cooperative cancellation documentation**<br>Documentation lacked explicit disclaimer regarding blocking I/O and non-cooperative adapter pre-emption limitations. | **RESOLVED** | Documented technical reality across contracts and roadmap: cancellation is cooperative and evaluated at phase and checkpoint boundaries and adapter polling. Synchronous blocking I/O without socket timeouts cannot be forcibly interrupted; execution continues until control yields to Python. | `HEAD` | `contracts.py` docstrings, `ROADMAP.md` Section 2.6, and remediation matrix. |
+| **P1-M4** | **Pre-execution validation and duplicate tool rejection**<br>Missing pre-flight validation of task, namespace, budgets, tokens, and duplicate tool names. | **RESOLVED** | Added pre-execution validation in `AgentRuntime.run()` and `__init__()`: validates non-empty task and namespace, validates budget and cancellation token types, and rejects empty or duplicate tool names with descriptive `ValueError`. | `ac2830f` | `tests/unit/test_runtime_runner.py`: `test_agent_runtime_pre_execution_validation`. |
+| **P1-M5** | **Diagnostic listener error consistency**<br>Diagnostic listener errors in strict mode caused unhandled crashes; non-strict mode had inconsistent error propagation. | **RESOLVED** | Implemented `DiagnosticListenerError` (inheriting from `HarnessError` and `RuntimeError`). In strict mode, `AgentRuntime.run()` catches listener failures across all lifecycle phases and guarantees callers receive a structured terminal `RunResult` (`RunStatus.FAILED` with `DIAGNOSTIC_LISTENER_FAILURE`). In non-strict mode, listener errors are logged without interrupting other observers. | `de2fd44` | `tests/unit/test_runtime_events.py`: 4 dedicated tests covering step listener failure, `RUN_STARTED` failure, `RUN_TERMINATED` handling, and non-strict multi-listener dispatch. |
+| **P1-M6** | **Milestone ownership and remediation status claims**<br>Phase 1 erroneously claimed `v0.1.0 (Core Lifecycle MVP)` which belongs to Phase 5. | **RESOLVED** | Corrected roadmap and release milestone ownership: Phase 1 delivers `Core Single-Agent Runtime Baseline` (`v0.1.0.dev0`). Phase 5 explicitly owns `v0.1.0 (Core Lifecycle MVP)`. | `617f5d5`, `HEAD` | `ROADMAP.md` Section 1 & 2.6; `pyproject.toml` version `0.1.0.dev0`. |
 
 ---
 
-## 7. Verification Suite Summary
+## 7. Summary of Status Classifications
 
-- **Total Unit, Integration & Failure Tests:** 171 passed in 0.41s (100% pass rate).
-- **Code Coverage:** Total branch coverage is **90.34%**, with core runtime modules at **98%** (enforced threshold $\ge 85\%$).
-- **Static Type Checking:** Strict Mypy passes with zero warnings or errors across 47 source files.
-- **Code Formatting & Linting:** Ruff check passes (0 errors); Ruff format passes (47 files formatted).
-- **Package Build:** `python -m build` generates `.tar.gz` and `.whl` cleanly with executable console script `memory-agent`.
-- **Wheel Installation Smoke Test:** Verifies importability, contracts, test doubles, and `py.typed` in an isolated venv.
+| Classification | Count | Finding IDs |
+|---|:---:|---|
+| **RESOLVED** | 28 | H-01, H-02, H-03, N-01, R-1, R-2, R-3, R-4, M-01, M-02, M-03, M-06, M-07, M-11, D-01, D-02, D-03, D-04, D-05, D-06, P1-H1, P1-H2, P1-M1, P1-M2, P1-M3, P1-M4, P1-M5, P1-M6 |
+| **OPEN** | 0 | None (All Phase 0 and Phase 1 audit remediation findings fully resolved) |
+| **SPECIFIED / DEFERRED** | 9 | H-04 (Phase 2 & 5), H-05 (Phase 6), H-06 (Phase 4), H-07 (Phase 3), M-04 (Phase 2), M-05 (Phase 2), M-08 (Phase 2 & 8), M-09 (Phase 2 & 7), M-10 (Phase 9) |
+| **Total Tracked Findings** | **37** | Exact original taxonomy preserved without renumbering or merging. |
+
+---
+
+## 8. Verification Suite Summary
+
+- **Total Unit, Integration & Failure Tests:** 185 passed in 0.60s (100% pass rate).
+- **Code Coverage:** Total branch coverage is **88.89%** (enforced quality threshold $\ge 85\%$).
+- **Static Type Checking:** Strict Mypy passes with zero warnings or errors across 49 source files.
+- **Code Formatting & Linting:** Ruff check passes (0 errors); Ruff format passes (49 files formatted, pinned exact `0.9.9`).
+- **Package Build:** `python -m build` (isolated) and `python -m build --no-isolation` generate `.tar.gz` and `.whl` cleanly (`setuptools>=70.0.0`, `wheel>=0.40.0`).
+- **Wheel Installation Smoke Test:** Verifies importability, contracts, test doubles, `py.typed`, and executes complete test suite against installed wheel in isolated virtual environments.
 - **Scope & Governance:** Functioning core single-agent runtime implemented with strictly zero Phase 2+ leakage; all commits authored by `Aditya bhatia <aditya89bh@gmail.com>` with zero AI trailers.
+- **Architectural Scope Limitations Documented:** Memory extraction, commit, and durable checkpointing are step lifecycle extension points with events; in-process orphaned run recovery documented.
+
