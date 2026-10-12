@@ -32,15 +32,47 @@ ToolInvocationId = NewType("ToolInvocationId", str)
 
 
 # --- Immutable, Hashable Data Structures ---
-class FrozenDict(dict[Any, Any]):
-    """Immutable, hashable dictionary that is safe for pickling, deepcopy, and serialization."""
+class FrozenDict(Mapping[Any, Any]):
+    """Immutable, hashable mapping that is safe for pickling, deepcopy, and serialization."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         if getattr(self, "_initialized", False):
             raise TypeError("FrozenDict is immutable and cannot be re-initialized")
-        super().__init__(*args, **kwargs)
+        self._data: dict[Any, Any] = dict(*args, **kwargs)
         self._initialized: bool = True
         self._hash: int | None = None
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._data[key]
+
+    def __iter__(self) -> Any:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+    def keys(self) -> Any:
+        return self._data.keys()
+
+    def values(self) -> Any:
+        return self._data.values()
+
+    def items(self) -> Any:
+        return self._data.items()
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Mapping):
+            return self._data == dict(other)
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return not (self == other)
 
     def __setitem__(self, key: Any, value: Any) -> None:
         raise TypeError("FrozenDict is immutable")
@@ -67,10 +99,18 @@ class FrozenDict(dict[Any, Any]):
         raise TypeError("FrozenDict is immutable")
 
     def __or__(self, other: Any) -> FrozenDict:
-        return FrozenDict(super().__or__(dict(other)))
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        combined = dict(self._data)
+        combined.update(other)
+        return FrozenDict(combined)
 
     def __ror__(self, other: Any) -> FrozenDict:
-        return FrozenDict(super().__ror__(dict(other)))
+        if not isinstance(other, Mapping):
+            return NotImplemented
+        combined = dict(other)
+        combined.update(self._data)
+        return FrozenDict(combined)
 
     def copy(self) -> Self:
         return self
@@ -79,9 +119,9 @@ class FrozenDict(dict[Any, Any]):
     def fromkeys(cls, iterable: Any, value: Any = None) -> Self:
         return cls(dict.fromkeys(iterable, value))
 
-    def __hash__(self) -> int:  # type: ignore[override]
+    def __hash__(self) -> int:
         if self._hash is None:
-            sorted_items = sorted(self.items(), key=lambda kv: (str(type(kv[0])), str(kv[0])))
+            sorted_items = sorted(self._data.items(), key=lambda kv: (str(type(kv[0])), str(kv[0])))
             self._hash = hash(tuple(sorted_items))
         return self._hash
 
@@ -90,14 +130,14 @@ class FrozenDict(dict[Any, Any]):
 
     def __deepcopy__(self, memo: Any) -> Self:
         return self.__class__(
-            {copy.deepcopy(k, memo): copy.deepcopy(v, memo) for k, v in self.items()}
+            {copy.deepcopy(k, memo): copy.deepcopy(v, memo) for k, v in self._data.items()}
         )
 
     def __reduce__(self) -> Any:
-        return (self.__class__, (dict(self),))
+        return (self.__class__, (dict(self._data),))
 
     def __repr__(self) -> str:
-        return f"FrozenDict({super().__repr__()})"
+        return f"FrozenDict({self._data!r})"
 
 
 # --- Normalization and Serialization Helpers ---

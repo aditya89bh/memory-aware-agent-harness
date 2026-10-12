@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import pickle
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
@@ -388,7 +389,7 @@ def test_default_memory_record_supports_dataclasses_asdict() -> None:
     res = dataclasses.asdict(rec)
     assert isinstance(res, dict)
     assert res["id"] == "mem_asdict_01"
-    assert isinstance(res["metadata"], dict)
+    assert isinstance(res["metadata"], Mapping)
     assert res["metadata"] == {"category": "test"}
 
 
@@ -823,3 +824,15 @@ def test_r2_frozendict_inherited_methods_mutation_defense() -> None:
     with pytest.raises(TypeError):
         fd |= {"c": 3}
     assert "c" not in fd
+
+    # 5. Verify FrozenDict is a Mapping but NOT a dict subclass (resolving R-2)
+    assert isinstance(fd, Mapping)
+    assert not isinstance(fd, dict)
+
+    # 6. Additional mutating methods explicitly raise TypeError
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        fd.setdefault("k", 1)
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        fd.popitem()
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        del fd["a"]
