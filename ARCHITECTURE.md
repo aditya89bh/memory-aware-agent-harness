@@ -3,7 +3,7 @@
 **Status:** PROPOSED (Phase 0 Architecture Revision 2)  
 **Architecture Style:** Modular Monolith with Ports-and-Adapters (Hexagonal Architecture)  
 **Target Runtime:** Python 3.11+, Local-First Single Process  
-**Specification Reference:** [SPEC.md](file:///Users/apple/Projects/memory-aware-agent-harness/SPEC.md)
+**Specification Reference:** [SPEC.md](SPEC.md)
 
 ---
 
@@ -110,9 +110,14 @@ The harness strictly differentiates **Run States** (the lifecycle condition of t
 stateDiagram-v2
     [*] --> INITIALIZED: initialize(config, budgets)
     INITIALIZED --> RUNNING: start()
+    INITIALIZED --> CANCELLED: cancel()
+    INITIALIZED --> FAILED: initialization failure
     RUNNING --> RUNNING: execute_step()
     RUNNING --> PAUSED: pause() / operator intervention
     PAUSED --> RUNNING: resume()
+    PAUSED --> CANCELLED: cancel()
+    PAUSED --> ABORTED: abort()
+    PAUSED --> FAILED: unhandled error
     RUNNING --> COMPLETED: finish() / goal achieved
     RUNNING --> BUDGET_EXHAUSTED: step/token/time limit hit
     RUNNING --> CANCELLED: cancel()
@@ -126,18 +131,57 @@ stateDiagram-v2
 ```
 
 #### Run States
-- `INITIALIZED`: Run created; configuration, namespace, and budgets validated.
-- `RUNNING`: Actively executing steps in the main loop.
-- `PAUSED`: Execution suspended pending external approval, human-in-the-loop, or crash recovery.
+- `INITIALIZED`: Run created; configuration, namespace, and budgets validated. Can transition to `RUNNING`, or terminate early via `CANCELLED` or `FAILED`.
+- `RUNNING`: Actively executing steps in the main loop. Can transition to `RUNNING` (loop), `PAUSED`, or any terminal state (`COMPLETED`, `BUDGET_EXHAUSTED`, `CANCELLED`, `ABORTED`, `FAILED`).
+- `PAUSED`: Execution suspended pending external approval, human-in-the-loop, or crash recovery. Can resume to `RUNNING`, or terminate via `CANCELLED`, `ABORTED`, or `FAILED`.
 - `COMPLETED`: Run successfully finished; goal achieved.
 - `BUDGET_EXHAUSTED`: Execution cleanly halted due to step, token, or wall-clock budget exhaustion.
 - `CANCELLED`: Execution cancelled by caller request.
 - `ABORTED`: Execution terminated immediately due to security violation or policy refusal.
 - `FAILED`: Execution terminated due to unhandled exception, storage failure, or unrecoverable error.
 
-### 3.2 Step Execution Lifecycle & Sequence Diagram
+### 3.2 Step Execution Lifecycle & State Machine
 
-During the `RUNNING` state, each step executes the following ordered operations:
+Step execution within the `RUNNING` state is governed by a dedicated state machine (`StepState`) validated against `LEGAL_STEP_TRANSITIONS`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> NOT_STARTED: step initialized
+    NOT_STARTED --> RETRIEVING: begin retrieval
+    NOT_STARTED --> FAILED: pre-step failure
+    NOT_STARTED --> ABORTED: pre-step abort
+    RETRIEVING --> COMPILING_CONTEXT: memories retrieved
+    RETRIEVING --> FAILED: retrieval error
+    RETRIEVING --> ABORTED: policy abort
+    COMPILING_CONTEXT --> DECIDING: context manifest ready
+    COMPILING_CONTEXT --> FAILED: compilation error
+    COMPILING_CONTEXT --> ABORTED: budget abort
+    DECIDING --> DISPATCHING_TOOL: tool call requested
+    DECIDING --> EXTRACTING_MEMORIES: model finished (no tool call)
+    DECIDING --> COMPLETED: direct completion
+    DECIDING --> FAILED: model error
+    DECIDING --> ABORTED: safety abort
+    DISPATCHING_TOOL --> EXTRACTING_MEMORIES: tool executed / observed
+    DISPATCHING_TOOL --> FAILED: tool crash / timeout
+    DISPATCHING_TOOL --> ABORTED: security abort
+    EXTRACTING_MEMORIES --> COMMITTING_MEMORIES: candidates extracted
+    EXTRACTING_MEMORIES --> CHECKPOINTING: no candidates to commit
+    EXTRACTING_MEMORIES --> COMPLETED: step completed cleanly
+    EXTRACTING_MEMORIES --> FAILED: extraction failure
+    EXTRACTING_MEMORIES --> ABORTED: governance abort
+    COMMITTING_MEMORIES --> CHECKPOINTING: memories committed to DB
+    COMMITTING_MEMORIES --> COMPLETED: step completed (checkpoint skipped)
+    COMMITTING_MEMORIES --> FAILED: commit transaction failure
+    COMMITTING_MEMORIES --> ABORTED: storage policy abort
+    CHECKPOINTING --> COMPLETED: state snapshot persisted
+    CHECKPOINTING --> FAILED: checkpoint failure
+    CHECKPOINTING --> ABORTED: persistence abort
+    COMPLETED --> [*]
+    FAILED --> [*]
+    ABORTED --> [*]
+```
+
+During the `RUNNING` state, each standard step advances through the sequence below:
 
 ```mermaid
 sequenceDiagram
@@ -208,10 +252,10 @@ sequenceDiagram
 
 ## 4. Public API & Typed Contract Signatures
 
-All core interfaces are expressed using strict Python `typing.Protocol`, PEP 484 `NewType` strong identifiers, and immutable dataclasses with deep immutability (`Tuple`, `MappingProxyType`) and canonical serialization (`SerializableRecord`).
+All core interfaces are expressed using strict Python `typing.Protocol`, PEP 484 `NewType` strong identifiers, and immutable dataclasses with deep immutability (`Tuple`, `FrozenDict`) and canonical serialization (`SerializableRecord`).
 
 > [!NOTE]
-> The canonical implementation and living contract source is maintained at [`src/memory_aware_agent_harness/contracts.py`](file:///Users/apple/Projects/memory-aware-agent-harness/src/memory_aware_agent_harness/contracts.py). Rather than duplicating 300+ lines of Python source in this architecture document, the sections below map every public component to its architectural role:
+> The canonical implementation and living contract source is maintained at [`src/memory_aware_agent_harness/contracts.py`](src/memory_aware_agent_harness/contracts.py). Rather than duplicating 300+ lines of Python source in this architecture document, the sections below map every public component to its architectural role:
 
 ### 4.1 Strong Type Identifiers (PEP 484 NewType)
 - `RunId`, `StepId`, `MemoryId`, `NamespaceId`, `CheckpointId`, `BranchId`, `EventId`, `ToolInvocationId`: Strong types preventing transposition errors across domain boundaries.
@@ -264,6 +308,7 @@ Per the approved architectural direction, **the four behavioral memory categorie
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
+PRAGMA secure_delete = ON;
 
 -- 1. Runs Table
 CREATE TABLE IF NOT EXISTS runs (
@@ -392,7 +437,14 @@ To guarantee atomicity and prevent corrupted or phantom state across crashes or 
 4. **Crash Recovery & Orphaned Run Semantics:**
    Upon agent reinitialization, the runtime scans for runs left in `RUNNING`. For any interrupted step:
    - Tool intents are audited. If an in-flight tool was mutating (`IDEMPOTENT_WRITE` or `NON_IDEMPOTENT_WRITE`) and its completion is unconfirmed, its status is set to `OUTCOME_UNKNOWN`.
-   - The run transitions to `PAUSED` or `FAILED` with a `PARTIAL_DIRTY_ROLLBACK` diagnostic record, preventing automated blind re-execution of unverified side effects.
+   - The run transitions to `PAUSED` or `FAILED` with a `PARTIAL_DIRTY_ROLLBACK` diagnostic record, preventing automated blind re-execution of unverified side effects. Resuming execution requires registered compensation handlers or human operator intervention.
+
+### 5.2 Storage Durability, Isolation & Safety Invariants
+- **WAL Concurrency:** `PRAGMA journal_mode = WAL;` enables concurrent read operations while a single write transaction executes.
+- **Durability Trade-offs:** `PRAGMA synchronous = NORMAL;` provides application-crash resilience in WAL mode (committed transactions survive unexpected process crashes). However, power loss or host kernel panics could theoretically lose recent un-fsynced WAL frames. For mission-critical environments requiring full power-loss durability, `synchronous = FULL` or `EXTRA` is configurable via storage settings.
+- **Referential Integrity:** `PRAGMA foreign_keys = ON;` enforces relational cascade and foreign key constraints across runs, steps, lineage, and invocations.
+- **Secure Deletion:** `PRAGMA secure_delete = ON;` overwrites freed database pages with zeroes upon deletion, eliminating remnants from SQLite unallocated pages.
+- **Strict Relational Multi-Tenant Isolation:** Tenant boundary isolation is enforced strictly via parameterized queries (`WHERE namespace_id = ?`) with partial composite index coverage (`idx_memories_active`). Multi-tenant access control does not rely on speculative cryptographic namespace claims.
 
 ---
 
@@ -432,19 +484,20 @@ Replay determinism is strictly scoped to **canonical recorded inputs and outputs
 1. **Deterministic Guarantees:** When replaying a recorded trace using `DeterministicClock`, `SeedableRNG`, `FakeModelAdapter`, and `StubToolDispatcher`, the harness guarantees bit-for-bit identical state transitions.
 2. **Compatibility Guard:** If the current runtime schema version does not match `trace_event.schema_version`, or if policy versions diverge, the replayer emits a `ReplayDivergenceWarning` or halts with `ReplayDivergenceError`.
 3. **Out-of-Scope:** Replay against live external LLMs or live third-party tools is non-deterministic by definition and explicitly out of scope.
+4. **Integrity & Replay Divergence Detection:** Checkpoint states and trace events maintain deterministic SHA-256 state hashes across transitions to detect local file corruption or replay divergence. Authenticated tamper protection against malicious storage manipulation requires HMAC or digital signatures (deferred to Phase 12 security hardening).
 
 ---
 
 ## 8. Multi-Boundary Forgetting & Physical Erasure
 
 The harness coordinates retention and forgetting across six storage boundaries:
-1. **Memory Records:** Software removal via `DELETE FROM memory_records WHERE id = ?` followed by `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL log frames. Zero-retrieval enforced via `WHERE state = 'active'` index coverage.
+1. **Memory Records:** Software removal via `PRAGMA secure_delete = ON; DELETE FROM memory_records WHERE id = ?;` followed by `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL log frames. Zero-retrieval enforced via `WHERE state = 'active'` index coverage.
 2. **Derived Memories:** Lineage invalidation propagates across consolidation products. Derived semantic memories referencing a purged ID are flagged as `origin_status = 'ORIGIN_PURGED'` and scheduled for eviction or re-consolidation.
 3. **Trace Events:** Retention limit pruning based on `retention_days`; summary tombstone record preserved while raw payloads are sanitized.
 4. **Checkpoints:** Expired snapshot pruning; cascade deletion of child snapshots when parent run is scrubbed.
-5. **In-Memory Caches:** Instant cache key eviction on tombstone emission.
+5. **In-Memory Caches:** Instant cache key eviction on tombstone emission or step boundary.
 6. **Exported Artifacts & Backups:** Filter pipelines omit tombstoned records during export; point-in-time restore scripts apply tombstone filters during rehydration.
-7. **Physical Erasure Realism:** Acknowledges that underlying SSD/NVMe flash controllers perform wear-leveling out-of-place writes; user-space SQLite operations guarantee software-level deletion and WAL truncation, but cannot claim hardware flash cell destruction.
+7. **Physical Erasure Realism:** SQLite `PRAGMA secure_delete = ON` overwrites freed database pages with zeroes and WAL truncation drains log frames. However, on modern solid-state media (NVMe/SATA SSDs), the Flash Translation Layer (FTL) performs wear-leveling and asynchronous TRIM/garbage collection. User-space POSIX file operations cannot guarantee physical flash cell destruction. The harness guarantees software-level retrieval exclusion, zero-fill page deletion, WAL drainage, and derived lineage purging.
 
 ---
 
@@ -511,5 +564,5 @@ memory-aware-agent-harness/
 | **ADR-007** | Version-Bounded Deterministic Replay & Test Doubles | Determinism guaranteed only for recorded traces under compatible schema/model versions. | None (testing & CI requirement). |
 | **ADR-008** | Multi-Boundary Verifiable Forgetting & Erasure Lineage | Durable tombstones, WAL truncation, and derived memory invalidation with SSD physical realism. | None (privacy & compliance requirement). |
 | **ADR-009** | Phase 0 Packaging & Scaffolding Strategy | Introduce minimal `pyproject.toml`, linters, and smoke CI in Phase 0 without runtime code. | None (standard engineering practice). |
-| **ADR-010** | Deep Immutability, Normalization, and Canonical Serialization | Public records use recursive freezing to MappingProxyType/tuples and canonical JSON roundtrips. | None (contract integrity requirement). |
+| **ADR-010** | Deep Immutability, Normalization, and Canonical Serialization | Public records use recursive freezing to FrozenDict/tuples and canonical JSON roundtrips. | None (contract integrity requirement). |
 | **ADR-011** | Strong Type Identifiers (NewType) and PEP 561 Typing | NewType domain identifiers and py.typed marker for compile-time safety and library consumption. | None (strict typing requirement). |

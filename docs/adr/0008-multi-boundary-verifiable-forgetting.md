@@ -8,9 +8,9 @@ Privacy regulations (e.g., GDPR Article 17 "Right to be Forgotten") and memory h
 
 ## Decision
 We implement a **Multi-Boundary Verifiable Forgetting Architecture**:
-1. Differentiate **Retrieval Exclusion** (logical hiding via `state = 'deleted'`, TTL expiration, and tombstone queries) from **Software Deletion & WAL Compaction** (`DELETE`, SQLite `VACUUM`, and `wal_checkpoint(TRUNCATE)`), while explicitly acknowledging hardware wear-leveling physical realities.
+1. Differentiate **Retrieval Exclusion** (logical hiding via `state = 'deleted'`, TTL expiration, and tombstone queries) from **Software Deletion & WAL Compaction** (`PRAGMA secure_delete = ON; DELETE`, SQLite `VACUUM`, and `wal_checkpoint(TRUNCATE)`), while explicitly acknowledging hardware wear-leveling physical realities. SQLite user-space operations zero database pages, but cannot guarantee physical destruction of SSD NAND flash blocks managed by controller Flash Translation Layers (FTL).
 2. Retention and deletion policies are explicitly coordinated across six boundaries:
-   - Memory records (`memory_records`): Software row deletion and WAL frame truncation.
+   - Memory records (`memory_records`): Software row deletion with `PRAGMA secure_delete = ON` and WAL frame truncation via `wal_checkpoint(TRUNCATE)`.
    - Derived memories (consolidation products): Automatic lineage invalidation; entries derived from purged records are flagged as `origin_status = 'ORIGIN_PURGED'` and scheduled for re-consolidation or eviction.
    - Trace events (`trace_events`): Hard deletion of event payloads older than `retention_days`; sequence counters preserved.
    - Checkpoints (`checkpoints`): Cascading purge of snapshots referencing deleted runs.
@@ -20,6 +20,6 @@ We implement a **Multi-Boundary Verifiable Forgetting Architecture**:
 4. SQL queries enforce zero-retrieval invariants via composite index lookups.
 
 ## Consequences
-- **Positive:** Provable 0% retrieval rate of deleted/expired items; GDPR audit compliance; automatic invalidation of derived knowledge; realistic security posture.
+- **Positive:** Provable 0% retrieval rate of deleted/expired items; GDPR audit compliance; automatic invalidation of derived knowledge; realistic security posture without unsupported physical destruction claims.
 - **Negative:** Tombstones accumulate over time and require separate retention pruning policies.
 - **Reversal Trigger:** None; core privacy and compliance requirement.

@@ -110,9 +110,14 @@ To eliminate ambiguity, the harness strictly separates **Run States** (the condi
 stateDiagram-v2
     [*] --> INITIALIZED: run initialized with config & budgets
     INITIALIZED --> RUNNING: run started
+    INITIALIZED --> CANCELLED: cancelled before start
+    INITIALIZED --> FAILED: initialization failure
     RUNNING --> RUNNING: step execution loop
     RUNNING --> PAUSED: execution suspended for human-in-the-loop
     PAUSED --> RUNNING: execution resumed
+    PAUSED --> CANCELLED: cancelled while paused
+    PAUSED --> ABORTED: aborted while paused
+    PAUSED --> FAILED: unhandled error while paused
     RUNNING --> COMPLETED: goal successfully achieved
     RUNNING --> BUDGET_EXHAUSTED: step, token, or time limit reached
     RUNNING --> CANCELLED: caller requested cancellation
@@ -127,9 +132,9 @@ stateDiagram-v2
 
 #### Run State Taxonomy
 1. **Non-Terminal States:**
-   - `INITIALIZED`: Run record created, policies loaded, budgets configured.
-   - `RUNNING`: Actively processing steps in the execution loop.
-   - `PAUSED`: Execution paused awaiting external event, approval, or reconciliation.
+   - `INITIALIZED`: Run record created, policies loaded, budgets configured. Can transition to `RUNNING`, or abort early via `CANCELLED` or `FAILED`.
+   - `RUNNING`: Actively processing steps in the execution loop. Can transition to `RUNNING` (loop), `PAUSED`, or any terminal state (`COMPLETED`, `BUDGET_EXHAUSTED`, `CANCELLED`, `ABORTED`, `FAILED`).
+   - `PAUSED`: Execution paused awaiting external event, human approval, or crash reconciliation. Can resume to `RUNNING`, or terminate via `CANCELLED`, `ABORTED`, or `FAILED`.
 2. **Terminal States:**
    - `COMPLETED`: Agent successfully achieved its task goal or issued final response.
    - `BUDGET_EXHAUSTED`: Execution halted due to exceeding max steps, token budget, or wall-clock timeout.
@@ -137,9 +142,49 @@ stateDiagram-v2
    - `ABORTED`: Execution terminated immediately due to security violation or fatal policy refusal.
    - `FAILED`: Execution terminated due to unhandled runtime exception, database failure, or crash.
 
-### 4.2 Lifecycle Step Operations
+### 4.2 Lifecycle Step FSM & Operations
 
-During the `RUNNING` state, each step executes the following ordered operations:
+Step execution within the `RUNNING` state is governed by a discrete state machine (`StepState`) with strict transition validation (`LEGAL_STEP_TRANSITIONS`):
+
+```mermaid
+stateDiagram-v2
+    [*] --> NOT_STARTED: step initialized
+    NOT_STARTED --> RETRIEVING: begin retrieval
+    NOT_STARTED --> FAILED: pre-step failure
+    NOT_STARTED --> ABORTED: pre-step policy abort
+    RETRIEVING --> COMPILING_CONTEXT: memories retrieved
+    RETRIEVING --> FAILED: retrieval error
+    RETRIEVING --> ABORTED: policy abort
+    COMPILING_CONTEXT --> DECIDING: context manifest ready
+    COMPILING_CONTEXT --> FAILED: compilation error
+    COMPILING_CONTEXT --> ABORTED: budget abort
+    DECIDING --> DISPATCHING_TOOL: model requested tool call
+    DECIDING --> EXTRACTING_MEMORIES: model finished (no tool call)
+    DECIDING --> COMPLETED: direct completion
+    DECIDING --> FAILED: model invocation error
+    DECIDING --> ABORTED: safety policy abort
+    DISPATCHING_TOOL --> EXTRACTING_MEMORIES: tool executed / observed
+    DISPATCHING_TOOL --> FAILED: tool crash / timeout
+    DISPATCHING_TOOL --> ABORTED: security abort
+    EXTRACTING_MEMORIES --> COMMITTING_MEMORIES: candidates extracted
+    EXTRACTING_MEMORIES --> CHECKPOINTING: no candidates to commit
+    EXTRACTING_MEMORIES --> COMPLETED: step completed cleanly
+    EXTRACTING_MEMORIES --> FAILED: extraction failure
+    EXTRACTING_MEMORIES --> ABORTED: governance abort
+    COMMITTING_MEMORIES --> CHECKPOINTING: memories committed to DB
+    COMMITTING_MEMORIES --> COMPLETED: step completed (checkpoint skipped)
+    COMMITTING_MEMORIES --> FAILED: commit transaction failure
+    COMMITTING_MEMORIES --> ABORTED: storage policy abort
+    CHECKPOINTING --> COMPLETED: state snapshot persisted
+    CHECKPOINTING --> FAILED: checkpoint failure
+    CHECKPOINTING --> ABORTED: persistence abort
+    COMPLETED --> [*]
+    FAILED --> [*]
+    ABORTED --> [*]
+```
+
+#### Step Operation Sequence
+During an ordinary non-terminal turn, each step advances through the ordered operations:
 
 $$\text{RETRIEVE} \longrightarrow \text{COMPILE\_CONTEXT} \longrightarrow \text{DECIDE} \longrightarrow [\text{DISPATCH\_TOOL} \rightarrow \text{OBSERVE}] \longrightarrow \text{EXTRACT\_CANDIDATES} \longrightarrow \text{VALIDATE\_MEMORIES} \longrightarrow \text{COMMIT\_MEMORIES} \longrightarrow \text{CHECKPOINT} \longrightarrow \text{RECORD\_TRACE}$$
 
@@ -147,8 +192,8 @@ $$\text{RETRIEVE} \longrightarrow \text{COMPILE\_CONTEXT} \longrightarrow \text{
 |---|---|---|---|
 | **1. RETRIEVE** | Active goal, namespace, working memory | Ranked list of memory records | Degrades gracefully to empty list; logs retrieval failure. |
 | **2. COMPILE_CONTEXT** | Ranked memories, system prompt, tool schemas, budget | Immutable `ContextManifest` | Throws `BudgetExceededError` if core prompt exceeds limit. |
-| **3. DECIDE** | `ContextManifest`, tool schemas | `ModelDecision` | Throws `ModelError` on timeout, invalid JSON, or schema error. |
-| **4. DISPATCH_TOOL** | Tool name, arguments, idempotency key | Dispatched execution | Throws `ToolValidationError` or records `OUTCOME_UNKNOWN` on crash. |
+| **3. DECIDE** | `ContextManifest`, tool schemas, `ModelCallContext` | `ModelDecision` | Throws `ModelError` on timeout, invalid JSON, or schema error. |
+| **4. DISPATCH_TOOL** | Tool name, arguments, `ToolCallContext` | Dispatched execution | Throws `ToolValidationError` or records `OUTCOME_UNKNOWN` on crash. |
 | **5. OBSERVE** | Raw tool output / error | Sanitized observation | Redacts secrets; tags output as untrusted text. |
 | **6. EXTRACT_CANDIDATES** | Step input, decision, observation | List of `MemoryCandidate` | Yields empty list if extraction policy finds no facts. |
 | **7. VALIDATE_MEMORIES** | `MemoryCandidate` list, `WritePolicy` | Approved / Rejected decisions | Rejections are recorded with explicit reason code. |
@@ -186,7 +231,7 @@ $$\text{Score}(m, q) = w_{rel} \cdot S_{rel}(m, q) + w_{rec} \cdot S_{rec}(m) + 
    - `DERIVED_CONSOLIDATION`: Synthesized semantic memories produced by consolidation pipelines.
    - `EXTERNAL_RETRIEVAL`: Context ingested from external knowledge bases or APIs.
 5. **Multi-Tenant Namespace Isolation:** Storage and retrieval enforce complete tenant boundary isolation via indexed `namespace_id`. Queries and writes are strictly scoped to the active namespace (`WHERE namespace_id = ?`); cross-namespace data access raises `PolicyViolationError`.
-6. **State Integrity Guarantees:** Checkpoint and event chain integrity is protected via deterministic SHA-256 state hashing across transitions, ensuring verifiable detection of local file corruption or unauthorized modification without relying on unrealistic hardware enclave claims.
+6. **State Integrity & Replay Divergence Detection:** Checkpoint and event chain integrity is protected via deterministic SHA-256 state hashing across transitions, ensuring verifiable detection of state divergence and local file corruption during replay or rehydration. Note: Authenticated cryptographic tamper detection against adversarial database manipulation requires HMAC or digital signatures (deferred to Phase 12 security hardening).
 
 ---
 
@@ -198,7 +243,7 @@ The harness formalizes retention and deletion across all storage boundaries. It 
 
 | Storage Boundary | Retrieval Exclusion Mechanism | Software Deletion & WAL Compaction | Retention Audit Trail |
 |---|---|---|---|
-| **Memory Records (`memory_records`)** | State set to `DELETED`, `SUPERSEDED`, or `EXPIRED`. Excluded via `WHERE state = 'active'`. | `DELETE FROM memory_records WHERE id = ?`; `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL frames. | Durable `TombstoneRecord` retains `memory_id`, `namespace_id`, timestamp, and deletion reason. Content is scrubbed. |
+| **Memory Records (`memory_records`)** | State set to `DELETED`, `SUPERSEDED`, or `EXPIRED`. Excluded via `WHERE state = 'active'`. | `PRAGMA secure_delete = ON;` `DELETE FROM memory_records WHERE id = ?;` `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL frames. | Durable `TombstoneRecord` retains `memory_id`, `namespace_id`, timestamp, and deletion reason. Content is scrubbed. |
 | **Derived Memories (Consolidation Products)** | Invalidation of derived entries whose source reference includes purged ID. | Marked as `origin_status = 'ORIGIN_PURGED'` and scheduled for re-consolidation or eviction. | Provenance lineage tree updated to record purged ancestor. |
 | **Trace Events (`trace_events`)** | Filtered during public replay or export if flagged for retention purge. | Hard deletion of event payloads older than configured `retention_days`. Sequence counter preserved. | Run-level tombstone summary preserves total event count without raw content payloads. |
 | **Checkpoints (`checkpoints`)** | Excluded from resume selection if marked obsolete or expired. | Cascading `DELETE` of expired checkpoint blobs. | Checkpoint deletion recorded in trace log. |
@@ -207,7 +252,7 @@ The harness formalizes retention and deletion across all storage boundaries. It 
 | **External Backups** | Filtered during rehydration/restore from backup. | Managed by external storage lifecycle policies (e.g., S3 retention rules). | Backup deletion manifests. |
 
 ### 6.2 Physical Erasure Realism
-SQLite `DELETE`, `VACUUM`, and `wal_checkpoint(TRUNCATE)` provide application-level deletion and page truncation. On modern solid-state media (NVMe/SATA SSDs), hardware flash translation layers (FTL) perform wear-leveling and asynchronous TRIM/garbage collection. Physical flash cell content destruction cannot be guaranteed by user-space POSIX file operations alone; the harness explicitly guarantees software-level retrieval exclusion, cryptographic WAL drainage, and derived lineage purging.
+SQLite `PRAGMA secure_delete = ON` overwrites deleted content with zeros in database pages, and `PRAGMA wal_checkpoint(TRUNCATE)` drains WAL log frames. However, on modern solid-state media (NVMe/SATA SSDs), hardware Flash Translation Layers (FTL) perform wear-leveling and asynchronous TRIM/garbage collection. Physical flash cell content destruction cannot be guaranteed by user-space POSIX file operations alone; the harness explicitly guarantees software-level retrieval exclusion, zero-fill database deletion, WAL frame truncation, and derived lineage purging.
 
 ### 6.3 Zero-Retrieval Invariant
 Any memory record with an active tombstone, an expired TTL (`expires_at <= current_time`), or a state in `('deleted', 'superseded', 'expired')` is **strictly prohibited from appearing in any retrieval query or compiled context**. This is enforced via parameterized SQL queries with composite index coverage.
@@ -245,6 +290,12 @@ flowchart TD
 - When branching execution at Checkpoint K to create branch $B$, the new branch is allocated an isolated `branch_id`.
 - Memory additions and state updates performed on branch $B$ are strictly invisible to the parent or peer branches.
 - Merging knowledge across branches requires explicit policy evaluation through the memory consolidation pipeline.
+
+### 7.4 Crash Recovery & Orphaned-Run Invariants
+- When an agent process halts abruptly (e.g., power loss, process termination, hardware fault) while a tool invocation is in-flight, the harness cannot deduce whether external side effects succeeded or failed.
+- Upon engine restart and recovery scanning, any in-flight mutating tool invocation is marked with `ToolCallStatus.OUTCOME_UNKNOWN`.
+- The interrupted run transitions to `PAUSED` (or terminal `FAILED`, depending on recovery policy) with status `PARTIAL_DIRTY_ROLLBACK`.
+- Automated re-execution is strictly prohibited: because the outcome of mutating operations cannot be safely inferred, resuming execution requires either registered fallible compensation handlers or human operator intervention.
 
 ---
 
