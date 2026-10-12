@@ -82,9 +82,12 @@ jobs:
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          pip install build
+          pip install build "setuptools>=70.0.0" "wheel>=0.40.0"
 
-      - name: Build wheel and sdist
+      - name: Build wheel and sdist (no-isolation)
+        run: python -m build --no-isolation
+
+      - name: Build wheel and sdist (isolated)
         run: python -m build
 
       - name: Fresh-Venv Isolated Wheel Installation & Verification
@@ -92,23 +95,29 @@ jobs:
           python -m venv /tmp/smoke_wheel_venv
           /tmp/smoke_wheel_venv/bin/pip install --upgrade pip
           /tmp/smoke_wheel_venv/bin/pip install dist/*.whl
+          /tmp/smoke_wheel_venv/bin/pip install pytest pytest-cov
           # Run import verification outside of source repository
           cd /tmp
-          /tmp/smoke_wheel_venv/bin/python -c "import memory_aware_agent_harness as m; print(f'Wheel Version: {m.__version__}')"
+          /tmp/smoke_wheel_venv/bin/python -c "import memory_aware_agent_harness as m; print(f'Wheel Version: {m.__version__}'); assert 'site-packages' in m.__file__"
           /tmp/smoke_wheel_venv/bin/python -c "from memory_aware_agent_harness.contracts import MemoryRecord, RunStatus; print('Contracts imported successfully from wheel')"
           /tmp/smoke_wheel_venv/bin/python -c "from memory_aware_agent_harness.doubles import DeterministicClock; c = DeterministicClock(); print(f'Clock double initialized: {c.now()}')"
           /tmp/smoke_wheel_venv/bin/python -c "from memory_aware_agent_harness.validation import validate_memory_record; print('Validation imported successfully from wheel')"
           /tmp/smoke_wheel_venv/bin/python -c "import importlib.resources as r; assert (r.files('memory_aware_agent_harness') / 'py.typed').is_file(), 'py.typed marker missing from installed wheel!'"
+          # Run test suite against installed distribution in isolated environment
+          /tmp/smoke_wheel_venv/bin/pytest "$GITHUB_WORKSPACE/tests" -v --import-mode=importlib
 
       - name: Fresh-Venv Isolated Sdist Installation & Verification
         run: |
           python -m venv /tmp/smoke_sdist_venv
           /tmp/smoke_sdist_venv/bin/pip install --upgrade pip
           /tmp/smoke_sdist_venv/bin/pip install dist/*.tar.gz
+          /tmp/smoke_sdist_venv/bin/pip install pytest pytest-cov
           # Run import verification outside of source repository
           cd /tmp
-          /tmp/smoke_sdist_venv/bin/python -c "import memory_aware_agent_harness as m; print(f'Sdist Version: {m.__version__}')"
+          /tmp/smoke_sdist_venv/bin/python -c "import memory_aware_agent_harness as m; print(f'Sdist Version: {m.__version__}'); assert 'site-packages' in m.__file__"
           /tmp/smoke_sdist_venv/bin/python -c "from memory_aware_agent_harness.contracts import MemoryRecord, RunStatus; print('Contracts imported successfully from sdist')"
           /tmp/smoke_sdist_venv/bin/python -c "from memory_aware_agent_harness.doubles import DeterministicClock; c = DeterministicClock(); print(f'Clock double initialized: {c.now()}')"
           /tmp/smoke_sdist_venv/bin/python -c "from memory_aware_agent_harness.validation import validate_memory_record; print('Validation imported successfully from sdist')"
           /tmp/smoke_sdist_venv/bin/python -c "import importlib.resources as r; assert (r.files('memory_aware_agent_harness') / 'py.typed').is_file(), 'py.typed marker missing from installed sdist!'"
+          # Run test suite against installed distribution in isolated environment
+          /tmp/smoke_sdist_venv/bin/pytest "$GITHUB_WORKSPACE/tests" -v --import-mode=importlib
