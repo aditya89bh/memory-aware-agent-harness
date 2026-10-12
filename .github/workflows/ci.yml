@@ -30,10 +30,10 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run Ruff Linter
-        run: ruff check src tests
+        run: ruff check .
 
       - name: Run Ruff Formatter Check
-        run: ruff format --check src tests
+        run: ruff format --check .
 
       - name: Run Strict Mypy
         run: mypy src tests
