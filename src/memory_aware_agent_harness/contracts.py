@@ -16,6 +16,7 @@ from typing import (
     NewType,
     Protocol,
     Self,
+    TypeVar,
     runtime_checkable,
 )
 
@@ -300,6 +301,28 @@ class ModelFinishReason(StrEnum):
     ERROR = "error"
 
 
+_E = TypeVar("_E", bound=Enum)
+
+
+def _coerce_enum(enum_cls: type[_E], value: Any, field_name: str) -> _E:
+    """Validate or safely coerce an enum value without lossy conversion."""
+    if isinstance(value, enum_cls):
+        return value
+    if isinstance(value, str):
+        try:
+            return enum_cls(value)
+        except ValueError as err:
+            valid_vals = [e.value for e in enum_cls]
+            raise ValueError(
+                f"{field_name} must be a valid {enum_cls.__name__} "
+                f"(one of {valid_vals}), got {value!r}"
+            ) from err
+    raise TypeError(
+        f"{field_name} must be an instance of {enum_cls.__name__} or str, "
+        f"got {type(value).__name__}"
+    )
+
+
 # --- FSM Transition Matrices ---
 LEGAL_RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = FrozenDict(
     {
@@ -383,10 +406,25 @@ class RunBudgets(SerializableRecord):
     max_time_seconds: float = 300.0
 
     def __post_init__(self) -> None:
+        if isinstance(self.max_steps, bool) or not isinstance(self.max_steps, int):
+            raise TypeError(
+                f"RunBudgets.max_steps must be int, got {type(self.max_steps).__name__}"
+            )
         if self.max_steps <= 0:
             raise ValueError(f"RunBudgets.max_steps must be > 0, got {self.max_steps}")
+        if isinstance(self.max_tokens, bool) or not isinstance(self.max_tokens, int):
+            raise TypeError(
+                f"RunBudgets.max_tokens must be int, got {type(self.max_tokens).__name__}"
+            )
         if self.max_tokens <= 0:
             raise ValueError(f"RunBudgets.max_tokens must be > 0, got {self.max_tokens}")
+        if isinstance(self.max_time_seconds, bool) or not isinstance(
+            self.max_time_seconds, (int, float)
+        ):
+            raise TypeError(
+                f"RunBudgets.max_time_seconds must be float, "
+                f"got {type(self.max_time_seconds).__name__}"
+            )
         if math.isnan(self.max_time_seconds) or math.isinf(self.max_time_seconds):
             raise ValueError(
                 f"RunBudgets.max_time_seconds must be finite, got {self.max_time_seconds}"
@@ -480,6 +518,15 @@ class TokenUsage(SerializableRecord):
     total_tokens: int
 
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.prompt_tokens, bool)
+            or not isinstance(self.prompt_tokens, int)
+            or isinstance(self.completion_tokens, bool)
+            or not isinstance(self.completion_tokens, int)
+            or isinstance(self.total_tokens, bool)
+            or not isinstance(self.total_tokens, int)
+        ):
+            raise TypeError("Token counts must be non-boolean integers")
         if self.prompt_tokens < 0 or self.completion_tokens < 0 or self.total_tokens < 0:
             raise ValueError("Token counts must be non-negative")
         if self.total_tokens != self.prompt_tokens + self.completion_tokens:
@@ -1185,6 +1232,11 @@ class ModelDecision(SerializableRecord):
     def __post_init__(self) -> None:
         calls = self.tool_calls if self.tool_calls is not None else ()
         object.__setattr__(self, "tool_calls", tuple(calls))
+        object.__setattr__(
+            self,
+            "finish_reason",
+            _coerce_enum(ModelFinishReason, self.finish_reason, "ModelDecision.finish_reason"),
+        )
         if self.raw_response is not None:
             object.__setattr__(self, "raw_response", _freeze(self.raw_response))
 
@@ -1192,6 +1244,10 @@ class ModelDecision(SerializableRecord):
             raise ValueError("ModelDecision.decision_id must not be empty")
         if not str(self.step_id).strip():
             raise ValueError("ModelDecision.step_id must not be empty")
+        if isinstance(self.tokens_used, bool) or not isinstance(self.tokens_used, int):
+            raise TypeError(
+                f"ModelDecision.tokens_used must be int, got {type(self.tokens_used).__name__}"
+            )
         if self.token_usage is not None and self.tokens_used == 0:
             object.__setattr__(self, "tokens_used", self.token_usage.total_tokens)
         elif self.token_usage is not None and self.tokens_used != self.token_usage.total_tokens:
@@ -1267,6 +1323,16 @@ class ToolResult(SerializableRecord):
     def __post_init__(self) -> None:
         if self.result is not None:
             object.__setattr__(self, "result", _freeze(self.result))
+        object.__setattr__(
+            self,
+            "status",
+            _coerce_enum(ToolCallStatus, self.status, "ToolResult.status"),
+        )
+        object.__setattr__(
+            self,
+            "side_effect",
+            _coerce_enum(SideEffectType, self.side_effect, "ToolResult.side_effect"),
+        )
 
         if not str(self.invocation_id).strip():
             raise ValueError("ToolResult.invocation_id must not be empty")
@@ -1274,6 +1340,13 @@ class ToolResult(SerializableRecord):
             raise ValueError("ToolResult.tool_name must not be empty")
         if not self.idempotency_key.strip():
             raise ValueError("ToolResult.idempotency_key must not be empty")
+        if isinstance(self.execution_time_ms, bool) or not isinstance(
+            self.execution_time_ms, (int, float)
+        ):
+            raise TypeError(
+                f"ToolResult.execution_time_ms must be float, "
+                f"got {type(self.execution_time_ms).__name__}"
+            )
         if math.isnan(self.execution_time_ms) or math.isinf(self.execution_time_ms):
             raise ValueError(
                 f"ToolResult.execution_time_ms must be finite, got {self.execution_time_ms}"
@@ -1351,6 +1424,16 @@ class MemoryRecord(SerializableRecord):
         object.__setattr__(self, "source_references", tuple(refs))
         meta = self.metadata if self.metadata is not None else {}
         object.__setattr__(self, "metadata", _freeze(meta))
+        object.__setattr__(
+            self,
+            "kind",
+            _coerce_enum(MemoryKind, self.kind, "MemoryRecord.kind"),
+        )
+        object.__setattr__(
+            self,
+            "state",
+            _coerce_enum(MemoryState, self.state, "MemoryRecord.state"),
+        )
 
         if not str(self.id).strip():
             raise ValueError("MemoryRecord.id must not be empty")
@@ -1358,11 +1441,19 @@ class MemoryRecord(SerializableRecord):
             raise ValueError("MemoryRecord.namespace_id must not be empty")
         if not self.content.strip():
             raise ValueError("MemoryRecord.content must not be empty")
+        if isinstance(self.confidence, bool) or not isinstance(self.confidence, (int, float)):
+            raise TypeError(
+                f"MemoryRecord.confidence must be float, got {type(self.confidence).__name__}"
+            )
         if math.isnan(self.confidence) or math.isinf(self.confidence):
             raise ValueError(f"MemoryRecord.confidence must be finite, got {self.confidence}")
         if not (0.0 <= self.confidence <= 1.0):
             raise ValueError(
                 f"MemoryRecord.confidence must be between 0.0 and 1.0, got {self.confidence}"
+            )
+        if isinstance(self.salience, bool) or not isinstance(self.salience, (int, float)):
+            raise TypeError(
+                f"MemoryRecord.salience must be float, got {type(self.salience).__name__}"
             )
         if math.isnan(self.salience) or math.isinf(self.salience):
             raise ValueError(f"MemoryRecord.salience must be finite, got {self.salience}")
@@ -1376,8 +1467,14 @@ class MemoryRecord(SerializableRecord):
             raise ValueError("MemoryRecord.updated_at must be timezone-aware (tzinfo is required)")
         if self.expires_at is not None and self.expires_at.tzinfo is None:
             raise ValueError("MemoryRecord.expires_at must be timezone-aware when provided")
+        if isinstance(self.access_count, bool) or not isinstance(self.access_count, int):
+            raise TypeError(
+                f"MemoryRecord.access_count must be int, got {type(self.access_count).__name__}"
+            )
         if self.access_count < 0:
             raise ValueError(f"MemoryRecord.access_count must be >= 0, got {self.access_count}")
+        if isinstance(self.version, bool) or not isinstance(self.version, int):
+            raise TypeError(f"MemoryRecord.version must be int, got {type(self.version).__name__}")
         if self.version < 1:
             raise ValueError(f"MemoryRecord.version must be >= 1, got {self.version}")
 
@@ -1417,6 +1514,21 @@ class MemoryCandidate(SerializableRecord):
     rejection_reason: str | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "kind",
+            _coerce_enum(MemoryKind, self.kind, "MemoryCandidate.kind"),
+        )
+        object.__setattr__(
+            self,
+            "validation_status",
+            _coerce_enum(
+                CandidateStatus,
+                self.validation_status,
+                "MemoryCandidate.validation_status",
+            ),
+        )
+
         if not self.candidate_id.strip():
             raise ValueError("MemoryCandidate.candidate_id must not be empty")
         if not str(self.namespace_id).strip():
@@ -1425,6 +1537,13 @@ class MemoryCandidate(SerializableRecord):
             raise ValueError("MemoryCandidate.content must not be empty")
         if not str(self.source_step_id).strip():
             raise ValueError("MemoryCandidate.source_step_id must not be empty")
+        if isinstance(self.proposed_salience, bool) or not isinstance(
+            self.proposed_salience, (int, float)
+        ):
+            raise TypeError(
+                f"MemoryCandidate.proposed_salience must be float, "
+                f"got {type(self.proposed_salience).__name__}"
+            )
         if math.isnan(self.proposed_salience) or math.isinf(self.proposed_salience):
             raise ValueError(
                 f"MemoryCandidate.proposed_salience must be finite, got {self.proposed_salience}"
@@ -1463,12 +1582,25 @@ class ContextItem(SerializableRecord):
     token_cost: int
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "kind",
+            _coerce_enum(MemoryKind, self.kind, "ContextItem.kind"),
+        )
         if not str(self.memory_id).strip():
             raise ValueError("ContextItem.memory_id must not be empty")
         if not self.content.strip():
             raise ValueError("ContextItem.content must not be empty")
+        if isinstance(self.rank_score, bool) or not isinstance(self.rank_score, (int, float)):
+            raise TypeError(
+                f"ContextItem.rank_score must be float, got {type(self.rank_score).__name__}"
+            )
         if math.isnan(self.rank_score) or math.isinf(self.rank_score):
             raise ValueError(f"ContextItem.rank_score must be finite, got {self.rank_score}")
+        if isinstance(self.token_cost, bool) or not isinstance(self.token_cost, int):
+            raise TypeError(
+                f"ContextItem.token_cost must be int, got {type(self.token_cost).__name__}"
+            )
         if self.token_cost < 0:
             raise ValueError(f"ContextItem.token_cost must be >= 0, got {self.token_cost}")
 
@@ -1506,8 +1638,16 @@ class ContextManifest(SerializableRecord):
             raise ValueError("ContextManifest.manifest_id must not be empty")
         if not str(self.step_id).strip():
             raise ValueError("ContextManifest.step_id must not be empty")
+        if isinstance(self.total_tokens, bool) or not isinstance(self.total_tokens, int):
+            raise TypeError(
+                f"ContextManifest.total_tokens must be int, got {type(self.total_tokens).__name__}"
+            )
         if self.total_tokens < 0:
             raise ValueError(f"ContextManifest.total_tokens must be >= 0, got {self.total_tokens}")
+        if isinstance(self.budget_limit, bool) or not isinstance(self.budget_limit, int):
+            raise TypeError(
+                f"ContextManifest.budget_limit must be int, got {type(self.budget_limit).__name__}"
+            )
         if self.budget_limit < 0:
             raise ValueError(f"ContextManifest.budget_limit must be >= 0, got {self.budget_limit}")
 
@@ -1555,10 +1695,25 @@ class StepResult(SerializableRecord):
             raise ValueError("StepResult.step_id must not be empty")
         if not str(self.run_id).strip():
             raise ValueError("StepResult.run_id must not be empty")
+        if isinstance(self.step_number, bool) or not isinstance(self.step_number, int):
+            raise TypeError(
+                f"StepResult.step_number must be int, got {type(self.step_number).__name__}"
+            )
         if self.step_number < 0:
             raise ValueError(f"StepResult.step_number must be >= 0, got {self.step_number}")
+        if (
+            isinstance(self.memories_proposed, bool)
+            or not isinstance(self.memories_proposed, int)
+            or isinstance(self.memories_committed, bool)
+            or not isinstance(self.memories_committed, int)
+        ):
+            raise TypeError("Memory counts must be non-boolean integers")
         if self.memories_proposed < 0 or self.memories_committed < 0:
             raise ValueError("Memory counts must be >= 0")
+        if isinstance(self.tokens_consumed, bool) or not isinstance(self.tokens_consumed, int):
+            raise TypeError(
+                f"StepResult.tokens_consumed must be int, got {type(self.tokens_consumed).__name__}"
+            )
         if self.token_usage is not None:
             if self.tokens_consumed == 0 and self.token_usage.total_tokens > 0:
                 object.__setattr__(self, "tokens_consumed", self.token_usage.total_tokens)
@@ -1630,12 +1785,28 @@ class RunResult(SerializableRecord):
     failure_details: FailureDetails | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "status",
+            _coerce_enum(RunStatus, self.status, "RunResult.status"),
+        )
         if not str(self.run_id).strip():
             raise ValueError("RunResult.run_id must not be empty")
         if not str(self.namespace_id).strip():
             raise ValueError("RunResult.namespace_id must not be empty")
+        if isinstance(self.step_count, bool) or not isinstance(self.step_count, int):
+            raise TypeError(
+                f"RunResult.step_count must be int, got {type(self.step_count).__name__}"
+            )
         if self.step_count < 0:
             raise ValueError(f"RunResult.step_count must be >= 0, got {self.step_count}")
+        if isinstance(self.total_tokens_consumed, bool) or not isinstance(
+            self.total_tokens_consumed, int
+        ):
+            raise TypeError(
+                f"RunResult.total_tokens_consumed must be int, "
+                f"got {type(self.total_tokens_consumed).__name__}"
+            )
         if self.token_usage is not None:
             if self.total_tokens_consumed == 0 and self.token_usage.total_tokens > 0:
                 object.__setattr__(self, "total_tokens_consumed", self.token_usage.total_tokens)

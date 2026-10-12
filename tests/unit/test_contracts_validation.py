@@ -18,12 +18,14 @@ from memory_aware_agent_harness.contracts import (
     ModelDecision,
     ModelFinishReason,
     NamespaceId,
+    RunBudgets,
     RunId,
     RunResult,
     RunStatus,
     SideEffectType,
     StepId,
     StepResult,
+    TokenUsage,
     ToolCallStatus,
     ToolInvocationId,
     ToolResult,
@@ -222,3 +224,129 @@ def test_step_and_run_result_validation() -> None:
             final_output="Done",
             trace_id="tr_01",
         )
+
+
+def test_m03_strict_enum_coercion_and_rejection() -> None:
+    """M-03 regression test: Enums are strictly coerced from valid strings and invalid rejected."""
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+
+    # Valid string for kind & state coerces to actual Enum instance
+    rec = MemoryRecord(
+        id=MemoryId("mem_coerce"),
+        namespace_id=NamespaceId("ns_01"),
+        kind="semantic",  # type: ignore[arg-type]
+        content="Testing enum coercion",
+        state="active",  # type: ignore[arg-type]
+        confidence=0.9,
+        salience=0.5,
+        created_at=now,
+        updated_at=now,
+    )
+    assert rec.kind is MemoryKind.SEMANTIC
+    assert rec.state is MemoryState.ACTIVE
+
+    # Invalid enum string is rejected with ValueError
+    with pytest.raises(ValueError, match=r"MemoryRecord\.kind must be a valid MemoryKind"):
+        MemoryRecord(
+            id=MemoryId("mem_invalid_kind"),
+            namespace_id=NamespaceId("ns_01"),
+            kind="bogus_kind",  # type: ignore[arg-type]
+            content="Invalid",
+            state=MemoryState.ACTIVE,
+            confidence=0.9,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+        )
+
+    # Non-str, non-enum type is rejected with TypeError
+    with pytest.raises(
+        TypeError, match=r"MemoryRecord\.kind must be an instance of MemoryKind or str"
+    ):
+        MemoryRecord(
+            id=MemoryId("mem_bad_type"),
+            namespace_id=NamespaceId("ns_01"),
+            kind=123,  # type: ignore[arg-type]
+            content="Invalid",
+            state=MemoryState.ACTIVE,
+            confidence=0.9,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+        )
+
+    # ToolResult enum coercion & rejection
+    tr = ToolResult(
+        invocation_id=ToolInvocationId("inv_01"),
+        tool_name="test_tool",
+        status="completed",  # type: ignore[arg-type]
+        side_effect="read_only",  # type: ignore[arg-type]
+        idempotency_key="key_01",
+    )
+    assert tr.status is ToolCallStatus.COMPLETED
+    assert tr.side_effect is SideEffectType.READ_ONLY
+
+    with pytest.raises(ValueError, match=r"ToolResult\.status must be a valid ToolCallStatus"):
+        ToolResult(
+            invocation_id=ToolInvocationId("inv_01"),
+            tool_name="test_tool",
+            status="not_a_status",  # type: ignore[arg-type]
+            side_effect=SideEffectType.READ_ONLY,
+            idempotency_key="key_01",
+        )
+
+
+def test_m03_reject_lossy_coercion_and_invalid_primitive_types() -> None:
+    """M-03 regression test: Booleans and invalid types rejected to prevent lossy conversions."""
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+
+    # Boolean passed for float confidence is rejected
+    with pytest.raises(TypeError, match=r"MemoryRecord\.confidence must be float"):
+        MemoryRecord(
+            id=MemoryId("mem_01"),
+            namespace_id=NamespaceId("ns_01"),
+            kind=MemoryKind.SEMANTIC,
+            content="Fact",
+            state=MemoryState.ACTIVE,
+            confidence=True,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+        )
+
+    # Boolean passed for float salience is rejected
+    with pytest.raises(TypeError, match=r"MemoryRecord\.salience must be float"):
+        MemoryRecord(
+            id=MemoryId("mem_01"),
+            namespace_id=NamespaceId("ns_01"),
+            kind=MemoryKind.SEMANTIC,
+            content="Fact",
+            state=MemoryState.ACTIVE,
+            confidence=0.9,
+            salience=False,
+            created_at=now,
+            updated_at=now,
+        )
+
+    # Boolean passed for integer access_count is rejected
+    with pytest.raises(TypeError, match=r"MemoryRecord\.access_count must be int"):
+        MemoryRecord(
+            id=MemoryId("mem_01"),
+            namespace_id=NamespaceId("ns_01"),
+            kind=MemoryKind.SEMANTIC,
+            content="Fact",
+            state=MemoryState.ACTIVE,
+            confidence=0.9,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            access_count=True,
+        )
+
+    # Boolean passed for RunBudgets.max_steps is rejected
+    with pytest.raises(TypeError, match=r"RunBudgets\.max_steps must be int"):
+        RunBudgets(max_steps=True)
+
+    # Boolean passed for TokenUsage counts is rejected
+    with pytest.raises(TypeError, match=r"Token counts must be non-boolean integers"):
+        TokenUsage(prompt_tokens=True, completion_tokens=10, total_tokens=11)
