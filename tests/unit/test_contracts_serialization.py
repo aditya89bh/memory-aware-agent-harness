@@ -604,7 +604,7 @@ def test_unsupported_metadata_values_rejected_instead_of_silently_converted() ->
             metadata={123: "non_string_key"},  # type: ignore[dict-item]
         )
 
-    with pytest.raises(ValueError, match="Datetime must be timezone-aware"):
+    with pytest.raises(TypeError, match="Unsupported metadata value"):
         MemoryRecord(
             id=MemoryId("m"),
             namespace_id=NamespaceId("ns"),
@@ -616,6 +616,48 @@ def test_unsupported_metadata_values_rejected_instead_of_silently_converted() ->
             created_at=now,
             updated_at=now,
             metadata={"naive": datetime(2026, 1, 1, 12, 0, 0)},
+        )
+
+    with pytest.raises(TypeError, match="Unsupported metadata value"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"aware": datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)},
+        )
+
+    with pytest.raises(TypeError, match="Unsupported metadata value"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"set_val": {1, 2}},
+        )
+
+    with pytest.raises(TypeError, match="Unsupported metadata value"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"enum_val": MemoryKind.EPISODIC},
         )
 
 
@@ -645,3 +687,109 @@ def test_to_dict_from_dict_and_to_json_from_json_roundtrip_accurately() -> None:
     j = rec.to_json()
     from_j = MemoryRecord.from_json(j)
     assert from_j == rec
+
+
+def test_r1_metadata_roundtrip_comprehensive() -> None:
+    """R-1 regression test: complex heterogeneous metadata roundtrips identically."""
+    now = datetime(2026, 10, 12, 12, 0, 0, tzinfo=UTC)
+    complex_meta = {
+        "string_val": "policy_alpha",
+        "int_val": 42,
+        "float_val": 3.14159,
+        "bool_true": True,
+        "bool_false": False,
+        "none_val": None,
+        "list_of_scalars": [1, "two", 3.0, True, None],
+        "nested_dict": {
+            "level2_key": "level2_val",
+            "level2_list": [10, 20, 30],
+            "level2_dict": {
+                "deep_key": "deep_val",
+                "deep_int": 999,
+            },
+        },
+    }
+
+    rec = MemoryRecord(
+        id=MemoryId("mem_r1"),
+        namespace_id=NamespaceId("ns_r1"),
+        kind=MemoryKind.SEMANTIC,
+        content="Testing R-1 serializable metadata roundtrip",
+        state=MemoryState.ACTIVE,
+        confidence=0.95,
+        salience=0.85,
+        created_at=now,
+        updated_at=now,
+        metadata=complex_meta,
+    )
+
+    # 1. to_dict / from_dict roundtrip
+    dict_repr = rec.to_dict()
+    rec_from_dict = MemoryRecord.from_dict(dict_repr)
+    assert rec_from_dict == rec
+    assert rec_from_dict.metadata == rec.metadata
+    assert type(rec_from_dict.metadata) is type(rec.metadata)
+    assert hash(rec_from_dict.metadata) == hash(rec.metadata)
+
+    # 2. to_json / from_json roundtrip
+    json_repr = rec.to_json()
+    rec_from_json = MemoryRecord.from_json(json_repr)
+    assert rec_from_json == rec
+    assert rec_from_json.metadata == rec.metadata
+    assert type(rec_from_json.metadata) is type(rec.metadata)
+    assert hash(rec_from_json.metadata) == hash(rec.metadata)
+
+    # Verify deep immutability preserved after round-trip
+    assert isinstance(rec_from_json.metadata["nested_dict"], FrozenDict)
+    assert isinstance(rec_from_json.metadata["list_of_scalars"], tuple)
+    assert isinstance(rec_from_json.metadata["nested_dict"]["level2_dict"], FrozenDict)
+
+
+def test_r1_nested_invalid_metadata_rejected() -> None:
+    """R-1 regression test: deeply nested non-serializable objects are rejected."""
+    now = datetime(2026, 10, 12, 12, 0, 0, tzinfo=UTC)
+
+    # Nested aware datetime in dict
+    with pytest.raises(TypeError, match="Unsupported metadata value"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"outer": {"inner": datetime.now(UTC)}},
+        )
+
+    # Nested set in list
+    with pytest.raises(TypeError, match="Unsupported metadata value"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"items": [1, 2, {3, 4}]},
+        )
+
+    # Non-string key inside nested dict
+    with pytest.raises(TypeError, match="Mapping keys must be strings"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"outer": {42: "bad_key"}},
+        )

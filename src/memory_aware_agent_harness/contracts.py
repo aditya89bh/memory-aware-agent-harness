@@ -89,8 +89,17 @@ class FrozenDict(dict[Any, Any]):
 
 # --- Normalization and Serialization Helpers ---
 def _freeze(val: Any) -> Any:
-    """Recursively validate and freeze mutable objects into immutable, hashable variants."""
-    if val is None or isinstance(val, (str, bool)):
+    """Recursively validate and freeze metadata and mapping structures into immutable variants."""
+    if isinstance(val, Enum):
+        raise TypeError(
+            f"Unsupported metadata value of type {type(val).__name__}: "
+            "metadata values must be JSON-serializable primitives "
+            "(str, int, float, bool, None, Mapping, Sequence); "
+            "enums should be passed as their primitive string values (.value)"
+        )
+    if val is None or isinstance(val, str):
+        return val
+    if isinstance(val, bool):
         return val
     if isinstance(val, int):
         return val
@@ -98,26 +107,20 @@ def _freeze(val: Any) -> Any:
         if math.isnan(val) or math.isinf(val):
             raise ValueError(f"Float value must be finite, got {val}")
         return val
-    if isinstance(val, datetime):
-        if val.tzinfo is None:
-            raise ValueError("Datetime must be timezone-aware (tzinfo is required)")
-        return val
-    if isinstance(val, (StrEnum, Enum)):
-        return val
-    if isinstance(val, SerializableRecord):
-        return val
     if isinstance(val, Mapping):
-        frozen_data: dict[Any, Any] = {}
+        frozen_data: dict[str, Any] = {}
         for k, v in val.items():
-            if not isinstance(k, (str, Enum, StrEnum)):
-                raise TypeError(f"Mapping keys must be strings or Enums, got {type(k).__name__}")
+            if not isinstance(k, str) or isinstance(k, Enum):
+                raise TypeError(f"Mapping keys must be strings, got {type(k).__name__}")
             frozen_data[k] = _freeze(v)
         return FrozenDict(frozen_data)
     if isinstance(val, (list, tuple)):
         return tuple(_freeze(item) for item in val)
-    if isinstance(val, (set, frozenset)):
-        return frozenset(_freeze(item) for item in val)
-    raise TypeError(f"Unsupported metadata value of type {type(val).__name__}: {val!r}")
+    raise TypeError(
+        f"Unsupported metadata value of type {type(val).__name__}: "
+        "metadata values must be JSON-serializable primitives "
+        "(str, int, float, bool, None, Mapping, Sequence)"
+    )
 
 
 def _serialize_value(val: Any) -> Any:
