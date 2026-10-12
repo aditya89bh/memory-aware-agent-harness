@@ -37,6 +37,9 @@ dependencies = [
     "pydantic>=2.7.0",
 ]
 
+[project.scripts]
+memory-agent = "memory_aware_agent_harness.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/aditya89bh/memory-aware-agent-harness"
 Repository = "https://github.com/aditya89bh/memory-aware-agent-harness"
