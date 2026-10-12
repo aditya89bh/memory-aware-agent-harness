@@ -1,20 +1,24 @@
 """Bounded execution loop runner for the core single-agent runtime.
 
 Orchestrates agent runs with budget enforcement, live cancellation handling,
-model decision dispatching, and canonical result compilation.
+model decision dispatching, 8-phase step lifecycle execution, and canonical result compilation.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from memory_aware_agent_harness.contracts import (
     CancellationToken,
     ClockPort,
+    ContextItem,
     ContextManifest,
     FailureDetails,
     IdGeneratorPort,
+    MemoryKind,
+    MemoryStoreProtocol,
     ModelCallContext,
     ModelFinishReason,
     ModelPort,
@@ -22,10 +26,15 @@ from memory_aware_agent_harness.contracts import (
     RunBudgets,
     RunId,
     RunResult,
+    SideEffectType,
     StepId,
     StepResult,
     StepState,
+    ToolCallContext,
+    ToolCallStatus,
+    ToolInvocationId,
     ToolProtocol,
+    ToolResult,
 )
 from memory_aware_agent_harness.runtime.cancellation import CancellationListener
 from memory_aware_agent_harness.runtime.fsm import StepFSM
@@ -40,19 +49,22 @@ from memory_aware_agent_harness.runtime.step_compiler import StepOutcomeCompiler
 
 
 class AgentRuntime:
-    """Core single-agent runtime executing bounded tasks."""
+    """Core single-agent runtime executing bounded tasks across the full lifecycle."""
 
     def __init__(
         self,
         model: ModelPort,
         *,
         tools: Sequence[ToolProtocol] | None = None,
+        memory_store: MemoryStoreProtocol | None = None,
         clock: ClockPort | None = None,
         id_generator: IdGeneratorPort | None = None,
         budgets: RunBudgets | None = None,
     ) -> None:
         self.model = model
         self.tools: tuple[ToolProtocol, ...] = tuple(tools) if tools is not None else ()
+        self.tools_by_name: dict[str, ToolProtocol] = {t.name: t for t in self.tools}
+        self.memory_store = memory_store
         self.clock = clock if clock is not None else SystemClock()
         self.id_generator = id_generator if id_generator is not None else SystemIdGenerator()
         self.default_budgets = budgets if budgets is not None else RunBudgets()
@@ -129,7 +141,8 @@ class AgentRuntime:
                     step_id=step_id,
                     error_code="STEP_EXECUTION_FAILURE",
                 )
-                step_fsm.transition_to(StepState.FAILED, reason=str(exc))
+                if not step_fsm.is_terminal:
+                    step_fsm.transition_to(StepState.FAILED, reason=str(exc))
                 state.fail(failure, reason=str(exc))
                 break
 
@@ -159,26 +172,52 @@ class AgentRuntime:
         step_compiler: StepOutcomeCompiler,
         cancellation_listener: CancellationListener,
     ) -> StepResult:
-        """Execute a single step lifecycle turn."""
-        # 1. Retrieval phase
+        """Execute the full 8-phase step lifecycle sequence."""
+        # --- Phase 1: RETRIEVAL ---
         step_fsm.transition_to(StepState.RETRIEVING)
         cancellation_listener.check()
 
-        # 2. Context compilation phase
+        included_items: list[ContextItem] = []
+        if self.memory_store is not None:
+            retrieved = self.memory_store.search(
+                namespace_id=state.namespace_id,
+                query=task,
+                kinds=[
+                    MemoryKind.WORKING,
+                    MemoryKind.EPISODIC,
+                    MemoryKind.SEMANTIC,
+                    MemoryKind.PROCEDURAL,
+                ],
+                limit=5,
+            )
+            for m in retrieved:
+                cost = len(m.content.split())
+                included_items.append(
+                    ContextItem(
+                        memory_id=m.id,
+                        kind=m.kind,
+                        content=m.content,
+                        rank_score=m.confidence,
+                        provenance_id=str(m.id),
+                        token_cost=cost,
+                    )
+                )
+
+        # --- Phase 2: COMPILE CONTEXT ---
         step_fsm.transition_to(StepState.COMPILING_CONTEXT)
         cancellation_listener.check()
 
         manifest = ContextManifest(
             manifest_id=self.id_generator.generate_id(f"manifest_{step_id}"),
             step_id=step_id,
-            included_items=(),
+            included_items=tuple(included_items),
             excluded_item_ids={},
-            total_tokens=len(task.split()),
+            total_tokens=sum(item.token_cost for item in included_items) + len(task.split()),
             budget_limit=state.budgets.max_tokens,
             compiled_prompt=task,
         )
 
-        # 3. Model decision phase
+        # --- Phase 3: DECIDE ---
         step_fsm.transition_to(StepState.DECIDING)
         cancellation_listener.check()
 
@@ -195,10 +234,99 @@ class AgentRuntime:
         tools_schema: list[Mapping[str, Any]] = [t.get_schema() for t in self.tools]
         decision = self.model.decide(manifest, tools_schema, model_ctx)
 
-        # 4. Compile step outcome
+        tool_results: list[ToolResult] = []
+
+        # --- Phase 4: DISPATCH TOOL (if requested) ---
+        if decision.finish_reason == ModelFinishReason.TOOL_CALL or len(decision.tool_calls) > 0:
+            step_fsm.transition_to(StepState.DISPATCHING_TOOL)
+            cancellation_listener.check()
+
+            for call in decision.tool_calls:
+                cancellation_listener.check()
+                inv_id = ToolInvocationId(self.id_generator.generate_id(f"inv_{call.tool_name}"))
+                tool = self.tools_by_name.get(call.tool_name)
+
+                if tool is None:
+                    fail_details = FailureDetails(
+                        error_type="ToolNotFoundError",
+                        message=f"Tool '{call.tool_name}' is not registered with runtime",
+                        step_id=step_id,
+                        error_code="TOOL_NOT_FOUND",
+                    )
+                    tool_results.append(
+                        ToolResult(
+                            invocation_id=inv_id,
+                            tool_name=call.tool_name,
+                            status=ToolCallStatus.FAILED,
+                            side_effect=SideEffectType.READ_ONLY,
+                            idempotency_key=f"idemp_{inv_id}",
+                            error=f"Tool '{call.tool_name}' not found",
+                            failure_details=fail_details,
+                        )
+                    )
+                    continue
+
+                tool_ctx = ToolCallContext(
+                    run_id=state.run_id,
+                    step_id=step_id,
+                    namespace_id=state.namespace_id,
+                    invocation_id=inv_id,
+                    idempotency_key=f"idemp_{inv_id}",
+                    cancellation_token=state.cancellation_token,
+                )
+
+                t_start = time.perf_counter()
+                try:
+                    raw_res = tool.execute(call.arguments, tool_ctx)
+                    t_elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                    tool_results.append(
+                        ToolResult(
+                            invocation_id=inv_id,
+                            tool_name=call.tool_name,
+                            status=ToolCallStatus.COMPLETED,
+                            side_effect=tool.side_effect,
+                            idempotency_key=f"idemp_{inv_id}",
+                            result=raw_res,
+                            execution_time_ms=t_elapsed_ms,
+                        )
+                    )
+                except Exception as exc:
+                    t_elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                    fail_details = FailureDetails(
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                        step_id=step_id,
+                        error_code="TOOL_EXECUTION_ERROR",
+                    )
+                    tool_results.append(
+                        ToolResult(
+                            invocation_id=inv_id,
+                            tool_name=call.tool_name,
+                            status=ToolCallStatus.FAILED,
+                            side_effect=tool.side_effect,
+                            idempotency_key=f"idemp_{inv_id}",
+                            error=str(exc),
+                            failure_details=fail_details,
+                            execution_time_ms=t_elapsed_ms,
+                        )
+                    )
+
+        # --- Phase 5: EXTRACT MEMORIES ---
+        step_fsm.transition_to(StepState.EXTRACTING_MEMORIES)
+        cancellation_listener.check()
+
+        # --- Phase 6: COMMIT MEMORIES ---
+        step_fsm.transition_to(StepState.COMMITTING_MEMORIES)
+        cancellation_listener.check()
+
+        # --- Phase 7: CHECKPOINTING ---
+        step_fsm.transition_to(StepState.CHECKPOINTING)
+        cancellation_listener.check()
+
+        # --- Phase 8: COMPILE STEP OUTCOME & COMPLETED ---
         return step_compiler.compile_step(
             decision=decision,
-            tool_results=(),
+            tool_results=tool_results,
             memories_proposed=0,
             memories_committed=0,
         )
