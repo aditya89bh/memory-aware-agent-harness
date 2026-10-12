@@ -7,6 +7,7 @@ cancellation listeners, and deterministic execution controllers.
 from __future__ import annotations
 
 from memory_aware_agent_harness.runtime.fsm import RunFSM, StepFSM
+from memory_aware_agent_harness.runtime.guards import BudgetGuard
 from memory_aware_agent_harness.runtime.state import (
     LifecycleState,
     SystemClock,
@@ -14,6 +15,7 @@ from memory_aware_agent_harness.runtime.state import (
 )
 
 __all__ = [
+    "BudgetGuard",
     "LifecycleState",
     "RunFSM",
     "StepFSM",

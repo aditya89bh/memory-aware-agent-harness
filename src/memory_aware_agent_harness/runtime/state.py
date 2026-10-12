@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from memory_aware_agent_harness.contracts import (
+    BudgetExceededError,
     CancellationToken,
     ClockPort,
     FailureDetails,
@@ -171,3 +172,21 @@ class LifecycleState:
         status = self.run_fsm.transition_to(RunStatus.FAILED, reason=reason)
         self.completed_at = self.clock.now()
         return status
+
+    def check_budgets(self) -> None:
+        """Verify all budget constraints against current execution state.
+
+        Raises:
+            BudgetExceededError: If step count, token consumption, or elapsed time is exceeded.
+        """
+        self.budgets.check_step_budget(self.step_count)
+        self.budgets.check_token_budget(self.cumulative_tokens.total_tokens)
+        self.budgets.check_time_budget(self.elapsed_seconds)
+
+    def is_budget_exhausted(self) -> tuple[bool, BudgetExceededError | None]:
+        """Check whether any budget constraint has been breached without raising."""
+        try:
+            self.check_budgets()
+            return False, None
+        except BudgetExceededError as exc:
+            return True, exc
