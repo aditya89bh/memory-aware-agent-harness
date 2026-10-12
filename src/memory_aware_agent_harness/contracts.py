@@ -416,6 +416,354 @@ class TokenUsage(SerializableRecord):
 
 
 @dataclass(frozen=True)
+class FailureDetails(SerializableRecord):
+    """Structured diagnostic details for step or run failures."""
+
+    error_type: str
+    message: str
+    step_id: StepId | None = None
+    traceback_summary: str | None = None
+    recovery_hint: str | None = None
+    error_code: str = "GENERIC_ERROR"
+
+    def __post_init__(self) -> None:
+        if not self.error_type.strip():
+            raise ValueError("FailureDetails.error_type must not be empty")
+        if not self.message.strip():
+            raise ValueError("FailureDetails.message must not be empty")
+        if not self.error_code.strip():
+            raise ValueError("FailureDetails.error_code must not be empty")
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        step_id_raw = data.get("step_id")
+        return cls(
+            error_type=str(data["error_type"]),
+            message=str(data["message"]),
+            step_id=StepId(str(step_id_raw)) if step_id_raw is not None else None,
+            traceback_summary=data.get("traceback_summary"),
+            recovery_hint=data.get("recovery_hint"),
+            error_code=str(data.get("error_code", "GENERIC_ERROR")),
+        )
+
+
+# --- Typed Exceptions with Structured Fields ---
+class HarnessError(Exception):
+    """Base class for all harness errors with structured diagnostic fields."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str = "HARNESS_ERROR",
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.error_code = error_code
+        self.recoverable = recoverable
+        if isinstance(details, FailureDetails):
+            self.details: Mapping[str, Any] = FrozenDict(details.to_dict())
+            self._failure_details: FailureDetails | None = details
+        elif isinstance(details, Mapping):
+            self.details = _freeze(details)
+            self._failure_details = None
+        elif details is None:
+            self.details = FrozenDict()
+            self._failure_details = None
+        else:
+            raise TypeError(
+                f"details must be a Mapping, FailureDetails, or None, got {type(details).__name__}"
+            )
+
+    def to_failure_details(self, step_id: StepId | None = None) -> FailureDetails:
+        """Convert exception to canonical FailureDetails."""
+        if self._failure_details is not None:
+            if step_id is not None and self._failure_details.step_id is None:
+                return FailureDetails(
+                    error_type=self._failure_details.error_type,
+                    message=self._failure_details.message,
+                    step_id=step_id,
+                    traceback_summary=self._failure_details.traceback_summary,
+                    recovery_hint=self._failure_details.recovery_hint,
+                    error_code=self._failure_details.error_code,
+                )
+            return self._failure_details
+        hint = self.details.get("recovery_hint")
+        recovery_hint = (
+            str(hint)
+            if hint is not None
+            else ("Retry operation" if self.recoverable else "Abort execution")
+        )
+        sid = self.details.get("step_id")
+        effective_step_id = (
+            step_id if step_id is not None else (StepId(str(sid)) if sid is not None else None)
+        )
+        return FailureDetails(
+            error_type=type(self).__name__,
+            message=self.message,
+            step_id=effective_step_id,
+            error_code=self.error_code,
+            recovery_hint=recovery_hint,
+        )
+
+
+class BudgetExceededError(HarnessError):
+    """Raised when step, token, or time budget limit is exceeded."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        budget_type: str | None = None,
+        limit: int | float | None = None,
+        observed: int | float | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if budget_type is not None:
+            d["budget_type"] = budget_type
+        if limit is not None:
+            d["limit"] = limit
+        if observed is not None:
+            d["observed"] = observed
+        super().__init__(
+            message,
+            error_code="BUDGET_EXCEEDED",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.budget_type = budget_type
+        self.limit = limit
+        self.observed = observed
+
+
+class PolicyViolationError(HarnessError):
+    """Raised when an operation violates security or safety policy."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        policy_name: str | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if policy_name is not None:
+            d["policy_name"] = policy_name
+        super().__init__(
+            message,
+            error_code="POLICY_VIOLATION",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.policy_name = policy_name
+
+
+class ToolExecutionError(HarnessError):
+    """Raised when tool execution fails in the sandbox."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        tool_name: str | None = None,
+        invocation_id: ToolInvocationId | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if tool_name is not None:
+            d["tool_name"] = tool_name
+        if invocation_id is not None:
+            d["invocation_id"] = str(invocation_id)
+        super().__init__(
+            message,
+            error_code="TOOL_EXECUTION_ERROR",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.tool_name = tool_name
+        self.invocation_id = invocation_id
+
+
+class CompensationFailedError(HarnessError):
+    """Raised when fallible compensation fails during rollback."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        step_id: StepId | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if step_id is not None:
+            d["step_id"] = str(step_id)
+        super().__init__(
+            message,
+            error_code="COMPENSATION_FAILED",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.step_id = step_id
+
+
+class ReplayDivergenceError(HarnessError):
+    """Raised when deterministic replay deviates from recorded trace."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        expected_hash: str | None = None,
+        actual_hash: str | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if expected_hash is not None:
+            d["expected_hash"] = expected_hash
+        if actual_hash is not None:
+            d["actual_hash"] = actual_hash
+        super().__init__(
+            message,
+            error_code="REPLAY_DIVERGENCE",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.expected_hash = expected_hash
+        self.actual_hash = actual_hash
+
+
+class StorageError(HarnessError):
+    """Raised on database integrity or persistence failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if operation is not None:
+            d["operation"] = operation
+        super().__init__(
+            message,
+            error_code="STORAGE_ERROR",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.operation = operation
+
+
+class ExecutionCancelledError(HarnessError):
+    """Raised when execution has been explicitly cancelled."""
+
+    def __init__(
+        self,
+        message: str = "Execution was cancelled",
+        *,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        super().__init__(
+            message,
+            error_code="EXECUTION_CANCELLED",
+            details=details,
+            recoverable=recoverable,
+        )
+
+
+class DeadlineExceededError(HarnessError):
+    """Raised when an operation exceeds its configured deadline."""
+
+    def __init__(
+        self,
+        message: str = "Deadline exceeded",
+        *,
+        deadline: datetime | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if deadline is not None:
+            d["deadline"] = deadline.isoformat()
+        super().__init__(
+            message,
+            error_code="DEADLINE_EXCEEDED",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.deadline = deadline
+
+
+class InvalidStateTransitionError(HarnessError):
+    """Raised when an FSM transition is attempted that violates the legal transition matrix."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        from_state: str | None = None,
+        to_state: str | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if from_state is not None:
+            d["from_state"] = from_state
+        if to_state is not None:
+            d["to_state"] = to_state
+        super().__init__(
+            message,
+            error_code="INVALID_STATE_TRANSITION",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.from_state = from_state
+        self.to_state = to_state
+
+
+@dataclass(frozen=True)
 class ModelCallContext(SerializableRecord):
     """Runtime context provided to a ModelPort invocation."""
 
@@ -423,6 +771,8 @@ class ModelCallContext(SerializableRecord):
     step_id: StepId
     namespace_id: NamespaceId
     budget_remaining_tokens: int
+    deadline: datetime | None = None
+    is_cancelled: bool = False
 
     def __post_init__(self) -> None:
         if not str(self.run_id).strip():
@@ -436,14 +786,55 @@ class ModelCallContext(SerializableRecord):
                 "ModelCallContext.budget_remaining_tokens must be >= 0, "
                 f"got {self.budget_remaining_tokens}"
             )
+        if self.deadline is not None and self.deadline.tzinfo is None:
+            raise ValueError("ModelCallContext.deadline must be timezone-aware when provided")
+
+    def check_cancellation(self) -> None:
+        """Raise ExecutionCancelledError if execution has been marked cancelled."""
+        if self.is_cancelled:
+            raise ExecutionCancelledError(
+                f"Execution run '{self.run_id}' step '{self.step_id}' was cancelled",
+                details={
+                    "run_id": str(self.run_id),
+                    "step_id": str(self.step_id),
+                    "error_code": "EXECUTION_CANCELLED",
+                    "recovery_hint": "Abort or resume after unpausing",
+                },
+            )
+
+    def is_expired(self, now: datetime) -> bool:
+        """Check if call deadline has elapsed."""
+        if self.deadline is None:
+            return False
+        if now.tzinfo is None:
+            raise ValueError("now must be timezone-aware (tzinfo is required)")
+        return now >= self.deadline
+
+    def check_deadline(self, now: datetime) -> None:
+        """Raise DeadlineExceededError if call deadline has elapsed."""
+        if self.is_expired(now):
+            raise DeadlineExceededError(
+                f"Deadline exceeded for run '{self.run_id}' step '{self.step_id}'",
+                deadline=self.deadline,
+                details={
+                    "run_id": str(self.run_id),
+                    "step_id": str(self.step_id),
+                    "deadline": self.deadline.isoformat() if self.deadline else None,
+                    "error_code": "DEADLINE_EXCEEDED",
+                    "recovery_hint": "Increase timeout or optimize prompt",
+                },
+            )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        deadline_raw = data.get("deadline")
         return cls(
             run_id=RunId(str(data["run_id"])),
             step_id=StepId(str(data["step_id"])),
             namespace_id=NamespaceId(str(data["namespace_id"])),
             budget_remaining_tokens=int(data["budget_remaining_tokens"]),
+            deadline=_parse_dt(deadline_raw) if deadline_raw is not None else None,
+            is_cancelled=bool(data.get("is_cancelled", False)),
         )
 
 
@@ -457,6 +848,8 @@ class ToolCallContext(SerializableRecord):
     invocation_id: ToolInvocationId
     idempotency_key: str
     timeout_seconds: float = 30.0
+    deadline: datetime | None = None
+    is_cancelled: bool = False
 
     def __post_init__(self) -> None:
         if not str(self.run_id).strip():
@@ -477,9 +870,50 @@ class ToolCallContext(SerializableRecord):
             raise ValueError(
                 f"ToolCallContext.timeout_seconds must be > 0.0, got {self.timeout_seconds}"
             )
+        if self.deadline is not None and self.deadline.tzinfo is None:
+            raise ValueError("ToolCallContext.deadline must be timezone-aware when provided")
+
+    def check_cancellation(self) -> None:
+        """Raise ExecutionCancelledError if execution has been marked cancelled."""
+        if self.is_cancelled:
+            raise ExecutionCancelledError(
+                f"Tool invocation '{self.invocation_id}' was cancelled",
+                details={
+                    "run_id": str(self.run_id),
+                    "step_id": str(self.step_id),
+                    "invocation_id": str(self.invocation_id),
+                    "error_code": "EXECUTION_CANCELLED",
+                    "recovery_hint": "Abort or re-dispatch with fresh intent",
+                },
+            )
+
+    def is_expired(self, now: datetime) -> bool:
+        """Check if tool call deadline has elapsed."""
+        if self.deadline is None:
+            return False
+        if now.tzinfo is None:
+            raise ValueError("now must be timezone-aware (tzinfo is required)")
+        return now >= self.deadline
+
+    def check_deadline(self, now: datetime) -> None:
+        """Raise DeadlineExceededError if tool call deadline has elapsed."""
+        if self.is_expired(now):
+            raise DeadlineExceededError(
+                f"Deadline exceeded for tool invocation '{self.invocation_id}'",
+                deadline=self.deadline,
+                details={
+                    "run_id": str(self.run_id),
+                    "step_id": str(self.step_id),
+                    "invocation_id": str(self.invocation_id),
+                    "deadline": self.deadline.isoformat() if self.deadline else None,
+                    "error_code": "DEADLINE_EXCEEDED",
+                    "recovery_hint": "Increase timeout_seconds or inspect external service latency",
+                },
+            )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        deadline_raw = data.get("deadline")
         return cls(
             run_id=RunId(str(data["run_id"])),
             step_id=StepId(str(data["step_id"])),
@@ -487,34 +921,8 @@ class ToolCallContext(SerializableRecord):
             invocation_id=ToolInvocationId(str(data["invocation_id"])),
             idempotency_key=str(data["idempotency_key"]),
             timeout_seconds=float(data.get("timeout_seconds", 30.0)),
-        )
-
-
-@dataclass(frozen=True)
-class FailureDetails(SerializableRecord):
-    """Structured diagnostic details for step or run failures."""
-
-    error_type: str
-    message: str
-    step_id: StepId | None = None
-    traceback_summary: str | None = None
-    recovery_hint: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.error_type.strip():
-            raise ValueError("FailureDetails.error_type must not be empty")
-        if not self.message.strip():
-            raise ValueError("FailureDetails.message must not be empty")
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> Self:
-        step_id_raw = data.get("step_id")
-        return cls(
-            error_type=str(data["error_type"]),
-            message=str(data["message"]),
-            step_id=StepId(str(step_id_raw)) if step_id_raw is not None else None,
-            traceback_summary=data.get("traceback_summary"),
-            recovery_hint=data.get("recovery_hint"),
+            deadline=_parse_dt(deadline_raw) if deadline_raw is not None else None,
+            is_cancelled=bool(data.get("is_cancelled", False)),
         )
 
 
@@ -554,6 +962,8 @@ class ModelDecision(SerializableRecord):
     content: str | None = None
     tool_calls: tuple[ToolCallRequest, ...] = field(default_factory=tuple)
     tokens_used: int = 0
+    token_usage: TokenUsage | None = None
+    failure_details: FailureDetails | None = None
     raw_response: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -566,6 +976,13 @@ class ModelDecision(SerializableRecord):
             raise ValueError("ModelDecision.decision_id must not be empty")
         if not str(self.step_id).strip():
             raise ValueError("ModelDecision.step_id must not be empty")
+        if self.token_usage is not None and self.tokens_used == 0:
+            object.__setattr__(self, "tokens_used", self.token_usage.total_tokens)
+        elif self.token_usage is not None and self.tokens_used != self.token_usage.total_tokens:
+            raise ValueError(
+                f"ModelDecision.tokens_used ({self.tokens_used}) does not match "
+                f"token_usage.total_tokens ({self.token_usage.total_tokens})"
+            )
         if self.tokens_used < 0:
             raise ValueError(f"ModelDecision.tokens_used must be >= 0, got {self.tokens_used}")
 
@@ -575,6 +992,18 @@ class ModelDecision(SerializableRecord):
         tool_calls = tuple(
             c if isinstance(c, ToolCallRequest) else ToolCallRequest.from_dict(c) for c in raw_calls
         )
+        tu_raw = data.get("token_usage")
+        token_usage = (
+            tu_raw
+            if isinstance(tu_raw, TokenUsage) or tu_raw is None
+            else TokenUsage.from_dict(tu_raw)
+        )
+        fd_raw = data.get("failure_details")
+        failure_details = (
+            fd_raw
+            if isinstance(fd_raw, FailureDetails) or fd_raw is None
+            else FailureDetails.from_dict(fd_raw)
+        )
         return cls(
             decision_id=str(data["decision_id"]),
             step_id=StepId(str(data["step_id"])),
@@ -582,6 +1011,8 @@ class ModelDecision(SerializableRecord):
             content=data.get("content"),
             tool_calls=tool_calls,
             tokens_used=int(data.get("tokens_used", 0)),
+            token_usage=token_usage,
+            failure_details=failure_details,
             raw_response=data.get("raw_response"),
         )
 
@@ -597,6 +1028,7 @@ class ToolResult(SerializableRecord):
     idempotency_key: str
     result: Mapping[str, Any] | None = None
     error: str | None = None
+    failure_details: FailureDetails | None = None
     execution_time_ms: float = 0.0
 
     def __post_init__(self) -> None:
@@ -617,9 +1049,31 @@ class ToolResult(SerializableRecord):
             raise ValueError(
                 f"ToolResult.execution_time_ms must be >= 0.0, got {self.execution_time_ms}"
             )
+        if self.failure_details is not None and self.error is None:
+            object.__setattr__(self, "error", self.failure_details.message)
+        elif (
+            self.error is not None
+            and self.failure_details is None
+            and self.status in (ToolCallStatus.FAILED, ToolCallStatus.OUTCOME_UNKNOWN)
+        ):
+            object.__setattr__(
+                self,
+                "failure_details",
+                FailureDetails(
+                    error_type="ToolExecutionError",
+                    message=self.error,
+                    error_code="TOOL_ERROR",
+                ),
+            )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        fd_raw = data.get("failure_details")
+        failure_details = (
+            fd_raw
+            if isinstance(fd_raw, FailureDetails) or fd_raw is None
+            else FailureDetails.from_dict(fd_raw)
+        )
         return cls(
             invocation_id=ToolInvocationId(str(data["invocation_id"])),
             tool_name=str(data["tool_name"]),
@@ -628,6 +1082,7 @@ class ToolResult(SerializableRecord):
             idempotency_key=str(data["idempotency_key"]),
             result=data.get("result"),
             error=data.get("error"),
+            failure_details=failure_details,
             execution_time_ms=float(data.get("execution_time_ms", 0.0)),
         )
 
@@ -849,6 +1304,8 @@ class StepResult(SerializableRecord):
     memories_committed: int
     tokens_consumed: int
     completed_at: datetime
+    token_usage: TokenUsage | None = None
+    failure_details: FailureDetails | None = None
 
     def __post_init__(self) -> None:
         tr = self.tool_results if self.tool_results is not None else ()
@@ -862,6 +1319,8 @@ class StepResult(SerializableRecord):
             raise ValueError(f"StepResult.step_number must be >= 0, got {self.step_number}")
         if self.memories_proposed < 0 or self.memories_committed < 0:
             raise ValueError("Memory counts must be >= 0")
+        if self.token_usage is not None and self.tokens_consumed == 0:
+            object.__setattr__(self, "tokens_consumed", self.token_usage.total_tokens)
         if self.tokens_consumed < 0:
             raise ValueError(f"StepResult.tokens_consumed must be >= 0, got {self.tokens_consumed}")
         if self.completed_at.tzinfo is None:
@@ -877,6 +1336,18 @@ class StepResult(SerializableRecord):
         tool_results = tuple(
             t if isinstance(t, ToolResult) else ToolResult.from_dict(t) for t in raw_tools
         )
+        tu_raw = data.get("token_usage")
+        token_usage = (
+            tu_raw
+            if isinstance(tu_raw, TokenUsage) or tu_raw is None
+            else TokenUsage.from_dict(tu_raw)
+        )
+        fd_raw = data.get("failure_details")
+        failure_details = (
+            fd_raw
+            if isinstance(fd_raw, FailureDetails) or fd_raw is None
+            else FailureDetails.from_dict(fd_raw)
+        )
         return cls(
             step_id=StepId(str(data["step_id"])),
             run_id=RunId(str(data["run_id"])),
@@ -887,6 +1358,8 @@ class StepResult(SerializableRecord):
             memories_committed=int(data.get("memories_committed", 0)),
             tokens_consumed=int(data.get("tokens_consumed", 0)),
             completed_at=_parse_dt(data["completed_at"]),
+            token_usage=token_usage,
+            failure_details=failure_details,
         )
 
 
@@ -902,6 +1375,8 @@ class RunResult(SerializableRecord):
     final_output: str | None
     trace_id: str
     error: str | None = None
+    token_usage: TokenUsage | None = None
+    failure_details: FailureDetails | None = None
 
     def __post_init__(self) -> None:
         if not str(self.run_id).strip():
@@ -910,52 +1385,55 @@ class RunResult(SerializableRecord):
             raise ValueError("RunResult.namespace_id must not be empty")
         if self.step_count < 0:
             raise ValueError(f"RunResult.step_count must be >= 0, got {self.step_count}")
+        if self.token_usage is not None and self.total_tokens_consumed == 0:
+            object.__setattr__(self, "total_tokens_consumed", self.token_usage.total_tokens)
         if self.total_tokens_consumed < 0:
             raise ValueError(
                 f"RunResult.total_tokens_consumed must be >= 0, got {self.total_tokens_consumed}"
             )
+        if self.failure_details is not None and self.error is None:
+            object.__setattr__(self, "error", self.failure_details.message)
+        elif (
+            self.error is not None
+            and self.failure_details is None
+            and self.status == RunStatus.FAILED
+        ):
+            object.__setattr__(
+                self,
+                "failure_details",
+                FailureDetails(
+                    error_type="HarnessError",
+                    message=self.error,
+                    error_code="RUN_FAILED",
+                ),
+            )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        tu_raw = data.get("token_usage")
+        token_usage = (
+            tu_raw
+            if isinstance(tu_raw, TokenUsage) or tu_raw is None
+            else TokenUsage.from_dict(tu_raw)
+        )
+        fd_raw = data.get("failure_details")
+        failure_details = (
+            fd_raw
+            if isinstance(fd_raw, FailureDetails) or fd_raw is None
+            else FailureDetails.from_dict(fd_raw)
+        )
         return cls(
             run_id=RunId(str(data["run_id"])),
             namespace_id=NamespaceId(str(data["namespace_id"])),
             status=RunStatus(data["status"]),
             step_count=int(data["step_count"]),
-            total_tokens_consumed=int(data["total_tokens_consumed"]),
+            total_tokens_consumed=int(data.get("total_tokens_consumed", 0)),
             final_output=data.get("final_output"),
             trace_id=str(data["trace_id"]),
             error=data.get("error"),
+            token_usage=token_usage,
+            failure_details=failure_details,
         )
-
-
-# --- Typed Exceptions ---
-class HarnessError(Exception):
-    """Base class for all harness errors."""
-
-
-class BudgetExceededError(HarnessError):
-    """Raised when step, token, or time budget limit is exceeded."""
-
-
-class PolicyViolationError(HarnessError):
-    """Raised when an operation violates security or safety policy."""
-
-
-class ToolExecutionError(HarnessError):
-    """Raised when tool execution fails in the sandbox."""
-
-
-class CompensationFailedError(HarnessError):
-    """Raised when fallible compensation fails during rollback."""
-
-
-class ReplayDivergenceError(HarnessError):
-    """Raised when deterministic replay deviates from recorded trace."""
-
-
-class StorageError(HarnessError):
-    """Raised on database integrity or persistence failure."""
 
 
 # --- Core Protocols (Ports) ---
@@ -985,7 +1463,7 @@ class ModelPort(Protocol):
         self,
         manifest: ContextManifest,
         tools_schema: Sequence[Mapping[str, Any]],
-        context: ModelCallContext | None = None,
+        context: ModelCallContext,
     ) -> ModelDecision:
         """Evaluate context manifest and return a structured decision."""
         ...
@@ -1037,7 +1515,7 @@ class ToolProtocol(Protocol):
     def execute(
         self,
         arguments: Mapping[str, Any],
-        context: ToolCallContext | None = None,
+        context: ToolCallContext,
     ) -> Mapping[str, Any]:
         """Execute tool and return structured observation."""
         ...
@@ -1054,11 +1532,14 @@ __all__ = [
     "CompensationFailedError",
     "ContextItem",
     "ContextManifest",
+    "DeadlineExceededError",
     "EventId",
+    "ExecutionCancelledError",
     "FailureDetails",
     "FrozenDict",
     "HarnessError",
     "IdGeneratorPort",
+    "InvalidStateTransitionError",
     "MemoryCandidate",
     "MemoryId",
     "MemoryKind",
