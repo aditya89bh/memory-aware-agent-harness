@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import math
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from enum import Enum, StrEnum
@@ -147,6 +149,8 @@ def _serialize_value(val: Any) -> Any:
         return val.astimezone(UTC).isoformat()
     if isinstance(val, (StrEnum, Enum)):
         return val.value
+    if isinstance(val, CancellationToken):
+        return {"is_cancelled": val.is_cancelled, "reason": val.reason}
     if hasattr(val, "to_dict") and callable(val.to_dict):
         return val.to_dict()
     if isinstance(val, Mapping):
@@ -776,6 +780,77 @@ class InvalidStateTransitionError(HarnessError):
         self.to_state = to_state
 
 
+class CancellationToken:
+    """Thread-safe cooperative cancellation token supporting live signaling and callbacks.
+
+    Cooperative cancellation requires model adapters and tools to periodically poll
+    check_cancellation() or register an abort callback. Blocking adapters that execute
+    synchronous C-level blocking operations without socket timeouts cannot be cooperatively
+    interrupted until control returns to Python.
+    """
+
+    def __init__(self, cancelled: bool = False, reason: str | None = None) -> None:
+        self._event = threading.Event()
+        self._reason: str | None = reason
+        self._callbacks: list[Callable[[], None]] = []
+        self._lock = threading.Lock()
+        if cancelled:
+            self._event.set()
+            if not self._reason:
+                self._reason = "Explicitly initialized as cancelled"
+
+    @property
+    def is_cancelled(self) -> bool:
+        """Return True if cancellation has been requested."""
+        return self._event.is_set()
+
+    @property
+    def reason(self) -> str | None:
+        """Return the cancellation reason if cancelled."""
+        return self._reason
+
+    def cancel(self, reason: str = "Execution was cancelled") -> None:
+        """Signal cancellation thread-safely and invoke registered callbacks."""
+        with self._lock:
+            if self._event.is_set():
+                return
+            self._reason = reason
+            self._event.set()
+            callbacks = list(self._callbacks)
+        for cb in callbacks:
+            with contextlib.suppress(Exception):
+                cb()
+
+    def check_cancellation(self) -> None:
+        """Raise ExecutionCancelledError if cancellation has been requested."""
+        if self.is_cancelled:
+            reason = self._reason or "Execution was cancelled"
+            raise ExecutionCancelledError(
+                f"Execution was cancelled: {reason}",
+                details={
+                    "error_code": "EXECUTION_CANCELLED",
+                    "cancellation_reason": reason,
+                    "recovery_hint": "Abort or resume after unpausing",
+                },
+            )
+
+    def add_callback(self, callback: Callable[[], None]) -> None:
+        """Register a callback to be executed immediately or upon cancellation."""
+        with self._lock:
+            if not self._event.is_set():
+                self._callbacks.append(callback)
+                return
+        with contextlib.suppress(Exception):
+            callback()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for cancellation signal up to timeout seconds. Return True if cancelled."""
+        return self._event.wait(timeout)
+
+    def __repr__(self) -> str:
+        return f"CancellationToken(cancelled={self.is_cancelled}, reason={self._reason!r})"
+
+
 @dataclass(frozen=True)
 class ModelCallContext(SerializableRecord):
     """Runtime context provided to a ModelPort invocation."""
@@ -786,6 +861,7 @@ class ModelCallContext(SerializableRecord):
     budget_remaining_tokens: int
     deadline: datetime | None = None
     is_cancelled: bool = False
+    cancellation_token: CancellationToken | None = None
 
     def __post_init__(self) -> None:
         if not str(self.run_id).strip():
@@ -804,13 +880,22 @@ class ModelCallContext(SerializableRecord):
 
     def check_cancellation(self) -> None:
         """Raise ExecutionCancelledError if execution has been marked cancelled."""
-        if self.is_cancelled:
+        is_canc = self.is_cancelled or (
+            self.cancellation_token is not None and self.cancellation_token.is_cancelled
+        )
+        if is_canc:
+            reason = (
+                self.cancellation_token.reason
+                if self.cancellation_token is not None and self.cancellation_token.reason
+                else "Execution was cancelled"
+            )
             raise ExecutionCancelledError(
-                f"Execution run '{self.run_id}' step '{self.step_id}' was cancelled",
+                f"Execution run '{self.run_id}' step '{self.step_id}' was cancelled: {reason}",
                 details={
                     "run_id": str(self.run_id),
                     "step_id": str(self.step_id),
                     "error_code": "EXECUTION_CANCELLED",
+                    "cancellation_reason": reason,
                     "recovery_hint": "Abort or resume after unpausing",
                 },
             )
@@ -841,6 +926,15 @@ class ModelCallContext(SerializableRecord):
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
         deadline_raw = data.get("deadline")
+        ct_raw = data.get("cancellation_token")
+        cancellation_token: CancellationToken | None = None
+        if isinstance(ct_raw, CancellationToken):
+            cancellation_token = ct_raw
+        elif isinstance(ct_raw, Mapping):
+            cancellation_token = CancellationToken(
+                cancelled=bool(ct_raw.get("is_cancelled", False)),
+                reason=ct_raw.get("reason"),
+            )
         return cls(
             run_id=RunId(str(data["run_id"])),
             step_id=StepId(str(data["step_id"])),
@@ -848,6 +942,7 @@ class ModelCallContext(SerializableRecord):
             budget_remaining_tokens=int(data["budget_remaining_tokens"]),
             deadline=_parse_dt(deadline_raw) if deadline_raw is not None else None,
             is_cancelled=bool(data.get("is_cancelled", False)),
+            cancellation_token=cancellation_token,
         )
 
 
@@ -863,6 +958,7 @@ class ToolCallContext(SerializableRecord):
     timeout_seconds: float = 30.0
     deadline: datetime | None = None
     is_cancelled: bool = False
+    cancellation_token: CancellationToken | None = None
 
     def __post_init__(self) -> None:
         if not str(self.run_id).strip():
@@ -888,14 +984,23 @@ class ToolCallContext(SerializableRecord):
 
     def check_cancellation(self) -> None:
         """Raise ExecutionCancelledError if execution has been marked cancelled."""
-        if self.is_cancelled:
+        is_canc = self.is_cancelled or (
+            self.cancellation_token is not None and self.cancellation_token.is_cancelled
+        )
+        if is_canc:
+            reason = (
+                self.cancellation_token.reason
+                if self.cancellation_token is not None and self.cancellation_token.reason
+                else "Execution was cancelled"
+            )
             raise ExecutionCancelledError(
-                f"Tool invocation '{self.invocation_id}' was cancelled",
+                f"Tool invocation '{self.invocation_id}' was cancelled: {reason}",
                 details={
                     "run_id": str(self.run_id),
                     "step_id": str(self.step_id),
                     "invocation_id": str(self.invocation_id),
                     "error_code": "EXECUTION_CANCELLED",
+                    "cancellation_reason": reason,
                     "recovery_hint": "Abort or re-dispatch with fresh intent",
                 },
             )
@@ -927,6 +1032,15 @@ class ToolCallContext(SerializableRecord):
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
         deadline_raw = data.get("deadline")
+        ct_raw = data.get("cancellation_token")
+        cancellation_token: CancellationToken | None = None
+        if isinstance(ct_raw, CancellationToken):
+            cancellation_token = ct_raw
+        elif isinstance(ct_raw, Mapping):
+            cancellation_token = CancellationToken(
+                cancelled=bool(ct_raw.get("is_cancelled", False)),
+                reason=ct_raw.get("reason"),
+            )
         return cls(
             run_id=RunId(str(data["run_id"])),
             step_id=StepId(str(data["step_id"])),
@@ -936,6 +1050,7 @@ class ToolCallContext(SerializableRecord):
             timeout_seconds=float(data.get("timeout_seconds", 30.0)),
             deadline=_parse_dt(deadline_raw) if deadline_raw is not None else None,
             is_cancelled=bool(data.get("is_cancelled", False)),
+            cancellation_token=cancellation_token,
         )
 
 
@@ -1539,6 +1654,7 @@ __all__ = [
     "LEGAL_STEP_TRANSITIONS",
     "BranchId",
     "BudgetExceededError",
+    "CancellationToken",
     "CandidateStatus",
     "CheckpointId",
     "ClockPort",

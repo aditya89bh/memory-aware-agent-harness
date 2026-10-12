@@ -11,6 +11,7 @@ import pytest
 
 from memory_aware_agent_harness.contracts import (
     BudgetExceededError,
+    CancellationToken,
     CompensationFailedError,
     ContextItem,
     ContextManifest,
@@ -397,3 +398,104 @@ def test_structured_exceptions_expose_code_details_and_recoverable() -> None:
         assert fd.error_code == exc.error_code
         assert fd.message == exc.message
         assert fd.step_id == StepId("step_01")
+
+
+def test_r3_live_cancellation_token_signaling() -> None:
+    """R-3 regression test: CancellationToken supports live signaling, callbacks, and checks."""
+    token = CancellationToken()
+    assert bool(token.is_cancelled) is False
+    assert (token.reason is None) is True
+
+    callback_invocations: list[str] = []
+
+    def on_cancel() -> None:
+        callback_invocations.append("cancelled")
+
+    token.add_callback(on_cancel)
+    assert not callback_invocations
+
+    ctx = ModelCallContext(
+        run_id=RunId("run_live_01"),
+        step_id=StepId("step_live_01"),
+        namespace_id=NamespaceId("ns_01"),
+        budget_remaining_tokens=5000,
+        cancellation_token=token,
+    )
+
+    # Initial check passes
+    ctx.check_cancellation()
+
+    # Cancel live
+    token.cancel(reason="User clicked Stop")
+    assert token.is_cancelled
+    assert token.reason == "User clicked Stop"
+    assert len(callback_invocations) == 1
+
+    # check_cancellation now raises ExecutionCancelledError
+    with pytest.raises(ExecutionCancelledError) as exc_info:
+        ctx.check_cancellation()
+
+    assert "User clicked Stop" in str(exc_info.value)
+    assert exc_info.value.details["cancellation_reason"] == "User clicked Stop"
+
+
+def test_r3_live_cancellation_during_in_progress_model_call() -> None:
+    """R-3 regression test: in-progress model call cooperatively aborts upon cancellation."""
+    import threading
+    import time
+
+    token = CancellationToken()
+    ctx = ModelCallContext(
+        run_id=RunId("run_stream"),
+        step_id=StepId("step_stream"),
+        namespace_id=NamespaceId("ns_01"),
+        budget_remaining_tokens=10000,
+        cancellation_token=token,
+    )
+
+    iterations_completed = 0
+    aborted_with_cancel = False
+
+    def simulated_model_worker() -> None:
+        nonlocal iterations_completed, aborted_with_cancel
+        try:
+            for _ in range(50):
+                ctx.check_cancellation()
+                time.sleep(0.01)
+                iterations_completed += 1
+        except ExecutionCancelledError:
+            aborted_with_cancel = True
+
+    worker = threading.Thread(target=simulated_model_worker)
+    worker.start()
+
+    # Allow worker to run a few iterations, then cancel
+    time.sleep(0.03)
+    token.cancel(reason="Live timeout threshold exceeded")
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert aborted_with_cancel
+    assert iterations_completed < 50
+
+
+def test_r3_cancellation_token_serialization_roundtrip() -> None:
+    """R-3 regression test: ModelCallContext with CancellationToken round-trips correctly."""
+    token = CancellationToken(cancelled=True, reason="Pre-cancelled task")
+    ctx = ModelCallContext(
+        run_id=RunId("run_ser"),
+        step_id=StepId("step_ser"),
+        namespace_id=NamespaceId("ns_01"),
+        budget_remaining_tokens=2500,
+        cancellation_token=token,
+    )
+
+    d = ctx.to_dict()
+    assert d["cancellation_token"] == {"is_cancelled": True, "reason": "Pre-cancelled task"}
+
+    restored = ModelCallContext.from_dict(d)
+    assert restored.cancellation_token is not None
+    assert restored.cancellation_token.is_cancelled
+    assert restored.cancellation_token.reason == "Pre-cancelled task"
+    with pytest.raises(ExecutionCancelledError):
+        restored.check_cancellation()
