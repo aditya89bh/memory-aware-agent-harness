@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from datetime import datetime
 
 import pytest
 
@@ -21,12 +22,14 @@ from memory_aware_agent_harness.contracts import (
     PolicyViolationError,
     ReplayDivergenceError,
     RunStatus,
+    SerializableRecord,
     SideEffectType,
     StorageError,
     ToolCallRequest,
     ToolCallStatus,
     ToolExecutionError,
     ToolResult,
+    _parse_dt,
 )
 
 
@@ -105,3 +108,32 @@ def test_exception_hierarchy() -> None:
     assert issubclass(CompensationFailedError, HarnessError)
     assert issubclass(ReplayDivergenceError, HarnessError)
     assert issubclass(StorageError, HarnessError)
+
+
+def test_frozendict_methods() -> None:
+    """Verify FrozenDict mapping methods and immutability operations."""
+    fd = FrozenDict({"a": 1, "b": 2})
+    assert repr(fd) == "FrozenDict({'a': 1, 'b': 2})"
+    assert fd.copy() is fd
+    assert fd.__copy__() is fd
+    assert FrozenDict.fromkeys(["x", "y"], 10) == FrozenDict({"x": 10, "y": 10})
+    merged = fd | {"c": 3}
+    assert merged == FrozenDict({"a": 1, "b": 2, "c": 3})
+    rmerged = {"c": 3} | fd
+    assert rmerged == FrozenDict({"c": 3, "a": 1, "b": 2})
+
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        del fd["a"]
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        fd.popitem()
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        fd.setdefault("z", 9)
+
+
+def test_serializable_record_base_and_datetime() -> None:
+    """Verify base SerializableRecord and datetime timezone validation."""
+    with pytest.raises(NotImplementedError, match="Subclasses must implement from_dict"):
+        SerializableRecord.from_dict({})
+
+    with pytest.raises(ValueError, match="Datetime must be timezone-aware"):
+        _parse_dt(datetime(2026, 1, 1, 0, 0, 0))

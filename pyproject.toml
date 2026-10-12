@@ -102,8 +102,26 @@ warn_no_return = true
 warn_unreachable = true
 mypy_path = "src"
 
+[tool.coverage.run]
+branch = true
+source = ["memory_aware_agent_harness"]
+
+[tool.coverage.report]
+fail_under = 85.0
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "@runtime_checkable",
+    "class .*\\bProtocol\\):",
+    "\\.\\.\\.",
+]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra -q --strict-markers"
+addopts = "-ra -q --strict-markers --cov=memory_aware_agent_harness --cov-branch --cov-fail-under=85"
 testpaths = ["tests"]
 pythonpath = ["src"]
