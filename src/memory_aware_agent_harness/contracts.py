@@ -396,6 +396,72 @@ class RunBudgets(SerializableRecord):
                 f"RunBudgets.max_time_seconds must be > 0.0, got {self.max_time_seconds}"
             )
 
+    def check_step_budget(self, steps_taken: int) -> None:
+        """Raise BudgetExceededError if steps_taken exceeds max_steps."""
+        if steps_taken >= self.max_steps:
+            raise BudgetExceededError(
+                f"Step budget exceeded: executed {steps_taken} steps, max is {self.max_steps}",
+                budget_type="steps",
+                limit=self.max_steps,
+                observed=steps_taken,
+                details={
+                    "error_code": "BUDGET_EXCEEDED",
+                    "budget_type": "steps",
+                    "limit": self.max_steps,
+                    "observed": steps_taken,
+                    "recovery_hint": (
+                        "Increase RunBudgets.max_steps or decompose task into smaller sub-tasks"
+                    ),
+                },
+            )
+
+    def check_token_budget(self, tokens_used: int) -> None:
+        """Raise BudgetExceededError if tokens_used exceeds max_tokens."""
+        if tokens_used > self.max_tokens:
+            raise BudgetExceededError(
+                f"Token budget exceeded: consumed {tokens_used} tokens, max is {self.max_tokens}",
+                budget_type="tokens",
+                limit=self.max_tokens,
+                observed=tokens_used,
+                details={
+                    "error_code": "BUDGET_EXCEEDED",
+                    "budget_type": "tokens",
+                    "limit": self.max_tokens,
+                    "observed": tokens_used,
+                    "recovery_hint": (
+                        "Increase RunBudgets.max_tokens or reduce context window size"
+                    ),
+                },
+            )
+
+    def check_time_budget(self, elapsed_seconds: float) -> None:
+        """Raise BudgetExceededError if elapsed_seconds exceeds max_time_seconds."""
+        if elapsed_seconds > self.max_time_seconds:
+            raise BudgetExceededError(
+                f"Time budget exceeded: elapsed {elapsed_seconds:.2f}s, "
+                f"max is {self.max_time_seconds:.2f}s",
+                budget_type="time",
+                limit=self.max_time_seconds,
+                observed=elapsed_seconds,
+                details={
+                    "error_code": "BUDGET_EXCEEDED",
+                    "budget_type": "time",
+                    "limit": self.max_time_seconds,
+                    "observed": elapsed_seconds,
+                    "recovery_hint": (
+                        "Increase RunBudgets.max_time_seconds or optimize tool execution latency"
+                    ),
+                },
+            )
+
+    def remaining_tokens(self, tokens_used: int) -> int:
+        """Return remaining tokens before exceeding budget ceiling."""
+        return max(0, self.max_tokens - tokens_used)
+
+    def remaining_steps(self, steps_taken: int) -> int:
+        """Return remaining steps before reaching step budget limit."""
+        return max(0, self.max_steps - steps_taken)
+
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
         return cls(
@@ -422,6 +488,28 @@ class TokenUsage(SerializableRecord):
                 f"prompt_tokens ({self.prompt_tokens}) + "
                 f"completion_tokens ({self.completion_tokens})"
             )
+
+    def __add__(self, other: Any) -> TokenUsage:
+        if not isinstance(other, TokenUsage):
+            return NotImplemented
+        return TokenUsage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+        )
+
+    def is_monotonically_ge(self, other: TokenUsage) -> bool:
+        """Check if self is greater than or equal to other across all token counts."""
+        return (
+            self.prompt_tokens >= other.prompt_tokens
+            and self.completion_tokens >= other.completion_tokens
+            and self.total_tokens >= other.total_tokens
+        )
+
+    @classmethod
+    def zero(cls) -> TokenUsage:
+        """Return a TokenUsage record with all counts initialized to zero."""
+        return cls(prompt_tokens=0, completion_tokens=0, total_tokens=0)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
@@ -1113,6 +1201,23 @@ class ModelDecision(SerializableRecord):
             )
         if self.tokens_used < 0:
             raise ValueError(f"ModelDecision.tokens_used must be >= 0, got {self.tokens_used}")
+        if self.finish_reason == ModelFinishReason.ERROR and self.failure_details is None:
+            if self.content is not None and self.content.strip():
+                object.__setattr__(
+                    self,
+                    "failure_details",
+                    FailureDetails(
+                        error_type="ModelExecutionError",
+                        message=self.content,
+                        step_id=self.step_id,
+                        error_code="MODEL_ERROR",
+                    ),
+                )
+            else:
+                raise ValueError(
+                    "ModelDecision with finish_reason ERROR must provide "
+                    "failure_details or error content"
+                )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
@@ -1177,22 +1282,29 @@ class ToolResult(SerializableRecord):
             raise ValueError(
                 f"ToolResult.execution_time_ms must be >= 0.0, got {self.execution_time_ms}"
             )
-        if self.failure_details is not None and self.error is None:
-            object.__setattr__(self, "error", self.failure_details.message)
-        elif (
-            self.error is not None
-            and self.failure_details is None
-            and self.status in (ToolCallStatus.FAILED, ToolCallStatus.OUTCOME_UNKNOWN)
-        ):
-            object.__setattr__(
-                self,
-                "failure_details",
-                FailureDetails(
-                    error_type="ToolExecutionError",
-                    message=self.error,
-                    error_code="TOOL_ERROR",
-                ),
-            )
+        if self.status in (ToolCallStatus.FAILED, ToolCallStatus.OUTCOME_UNKNOWN):
+            if self.error is None and self.failure_details is None:
+                raise ValueError(
+                    f"ToolResult with status {self.status.value} must provide "
+                    "error or failure_details"
+                )
+            if self.failure_details is not None and self.error is None:
+                object.__setattr__(self, "error", self.failure_details.message)
+            elif self.error is not None and self.failure_details is None:
+                object.__setattr__(
+                    self,
+                    "failure_details",
+                    FailureDetails(
+                        error_type="ToolExecutionError",
+                        message=self.error,
+                        error_code="TOOL_ERROR",
+                    ),
+                )
+        elif self.status == ToolCallStatus.COMPLETED:
+            if self.error is not None:
+                raise ValueError("ToolResult with status COMPLETED must not have error")
+            if self.failure_details is not None:
+                raise ValueError("ToolResult with status COMPLETED must not have failure_details")
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
@@ -1447,8 +1559,19 @@ class StepResult(SerializableRecord):
             raise ValueError(f"StepResult.step_number must be >= 0, got {self.step_number}")
         if self.memories_proposed < 0 or self.memories_committed < 0:
             raise ValueError("Memory counts must be >= 0")
-        if self.token_usage is not None and self.tokens_consumed == 0:
-            object.__setattr__(self, "tokens_consumed", self.token_usage.total_tokens)
+        if self.token_usage is not None:
+            if self.tokens_consumed == 0 and self.token_usage.total_tokens > 0:
+                object.__setattr__(self, "tokens_consumed", self.token_usage.total_tokens)
+            elif self.tokens_consumed != self.token_usage.total_tokens:
+                raise ValueError(
+                    f"StepResult.tokens_consumed ({self.tokens_consumed}) does not match "
+                    f"token_usage.total_tokens ({self.token_usage.total_tokens})"
+                )
+        elif self.decision.token_usage is not None:
+            if self.tokens_consumed == 0 and self.decision.token_usage.total_tokens > 0:
+                object.__setattr__(self, "tokens_consumed", self.decision.token_usage.total_tokens)
+            if self.token_usage is None:
+                object.__setattr__(self, "token_usage", self.decision.token_usage)
         if self.tokens_consumed < 0:
             raise ValueError(f"StepResult.tokens_consumed must be >= 0, got {self.tokens_consumed}")
         if self.completed_at.tzinfo is None:
@@ -1513,28 +1636,41 @@ class RunResult(SerializableRecord):
             raise ValueError("RunResult.namespace_id must not be empty")
         if self.step_count < 0:
             raise ValueError(f"RunResult.step_count must be >= 0, got {self.step_count}")
-        if self.token_usage is not None and self.total_tokens_consumed == 0:
-            object.__setattr__(self, "total_tokens_consumed", self.token_usage.total_tokens)
+        if self.token_usage is not None:
+            if self.total_tokens_consumed == 0 and self.token_usage.total_tokens > 0:
+                object.__setattr__(self, "total_tokens_consumed", self.token_usage.total_tokens)
+            elif self.total_tokens_consumed != self.token_usage.total_tokens:
+                raise ValueError(
+                    f"RunResult.total_tokens_consumed ({self.total_tokens_consumed}) "
+                    f"does not match token_usage.total_tokens ({self.token_usage.total_tokens})"
+                )
         if self.total_tokens_consumed < 0:
             raise ValueError(
                 f"RunResult.total_tokens_consumed must be >= 0, got {self.total_tokens_consumed}"
             )
-        if self.failure_details is not None and self.error is None:
-            object.__setattr__(self, "error", self.failure_details.message)
-        elif (
-            self.error is not None
-            and self.failure_details is None
-            and self.status == RunStatus.FAILED
-        ):
-            object.__setattr__(
-                self,
-                "failure_details",
-                FailureDetails(
-                    error_type="HarnessError",
-                    message=self.error,
-                    error_code="RUN_FAILED",
-                ),
-            )
+        if self.status in (RunStatus.FAILED, RunStatus.ABORTED):
+            if self.error is None and self.failure_details is None:
+                raise ValueError(
+                    f"RunResult with status {self.status.value} must provide "
+                    "error or failure_details"
+                )
+            if self.failure_details is not None and self.error is None:
+                object.__setattr__(self, "error", self.failure_details.message)
+            elif self.error is not None and self.failure_details is None:
+                object.__setattr__(
+                    self,
+                    "failure_details",
+                    FailureDetails(
+                        error_type="HarnessError",
+                        message=self.error,
+                        error_code=f"RUN_{self.status.name}",
+                    ),
+                )
+        elif self.status == RunStatus.COMPLETED:
+            if self.error is not None:
+                raise ValueError("RunResult with status COMPLETED must not have error")
+            if self.failure_details is not None:
+                raise ValueError("RunResult with status COMPLETED must not have failure_details")
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:

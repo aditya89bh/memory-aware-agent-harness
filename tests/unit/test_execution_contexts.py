@@ -30,6 +30,7 @@ from memory_aware_agent_harness.contracts import (
     NamespaceId,
     PolicyViolationError,
     ReplayDivergenceError,
+    RunBudgets,
     RunId,
     RunResult,
     RunStatus,
@@ -499,3 +500,213 @@ def test_r3_cancellation_token_serialization_roundtrip() -> None:
     assert restored.cancellation_token.reason == "Pre-cancelled task"
     with pytest.raises(ExecutionCancelledError):
         restored.check_cancellation()
+
+
+def test_r4_token_usage_arithmetic_and_monotonicity() -> None:
+    """R-4 regression test: TokenUsage supports zero factory, addition, and monotonic checks."""
+    z = TokenUsage.zero()
+    assert z.prompt_tokens == 0
+    assert z.completion_tokens == 0
+    assert z.total_tokens == 0
+
+    u1 = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+    u2 = TokenUsage(prompt_tokens=200, completion_tokens=100, total_tokens=300)
+
+    u_sum = u1 + u2
+    assert u_sum.prompt_tokens == 300
+    assert u_sum.completion_tokens == 150
+    assert u_sum.total_tokens == 450
+
+    # Monotonic checks
+    assert u_sum.is_monotonically_ge(u1)
+    assert u_sum.is_monotonically_ge(u2)
+    assert not u1.is_monotonically_ge(u_sum)
+
+    # Incompatible addition returns NotImplemented
+    assert u1.__add__("not a token usage") is NotImplemented
+
+
+def test_r4_run_budgets_checks_and_remainders() -> None:
+    """R-4 regression test: RunBudgets provides step, token, time checks and remainder helpers."""
+    budgets = RunBudgets(max_steps=10, max_tokens=1000, max_time_seconds=60.0)
+
+    # Step budget checks
+    budgets.check_step_budget(9)
+    assert budgets.remaining_steps(9) == 1
+    assert budgets.remaining_steps(15) == 0
+    with pytest.raises(BudgetExceededError) as exc_step:
+        budgets.check_step_budget(10)
+    assert exc_step.value.budget_type == "steps"
+    assert exc_step.value.limit == 10
+    assert exc_step.value.observed == 10
+
+    # Token budget checks
+    budgets.check_token_budget(1000)
+    assert budgets.remaining_tokens(800) == 200
+    assert budgets.remaining_tokens(1200) == 0
+    with pytest.raises(BudgetExceededError) as exc_tok:
+        budgets.check_token_budget(1001)
+    assert exc_tok.value.budget_type == "tokens"
+    assert exc_tok.value.limit == 1000
+    assert exc_tok.value.observed == 1001
+
+    # Time budget checks
+    budgets.check_time_budget(59.9)
+    with pytest.raises(BudgetExceededError) as exc_time:
+        budgets.check_time_budget(60.1)
+    assert exc_time.value.budget_type == "time"
+    assert exc_time.value.limit == 60.0
+
+
+def test_r4_model_decision_error_failure_invariants() -> None:
+    """R-4 regression test: ModelDecision with finish_reason ERROR requires failure details."""
+    with pytest.raises(ValueError, match="ModelDecision with finish_reason ERROR"):
+        ModelDecision(
+            decision_id="dec_err_01",
+            step_id=StepId("step_01"),
+            finish_reason=ModelFinishReason.ERROR,
+            content=None,
+            failure_details=None,
+        )
+
+    # Auto-constructs from content if content provided
+    dec_from_content = ModelDecision(
+        decision_id="dec_err_02",
+        step_id=StepId("step_01"),
+        finish_reason=ModelFinishReason.ERROR,
+        content="Rate limit reached on provider",
+    )
+    assert dec_from_content.failure_details is not None
+    assert dec_from_content.failure_details.message == "Rate limit reached on provider"
+    assert dec_from_content.failure_details.error_code == "MODEL_ERROR"
+
+
+def test_r4_tool_result_failure_and_success_invariants() -> None:
+    """R-4 regression test: ToolResult enforces failure details and clean success."""
+    # FAILED status without error or failure details raises
+    with pytest.raises(ValueError, match="ToolResult with status failed must provide"):
+        ToolResult(
+            invocation_id=ToolInvocationId("inv_fail_01"),
+            tool_name="web_search",
+            status=ToolCallStatus.FAILED,
+            side_effect=SideEffectType.READ_ONLY,
+            idempotency_key="ik_fail_01",
+            error=None,
+            failure_details=None,
+        )
+
+    # OUTCOME_UNKNOWN status without error or failure details raises
+    with pytest.raises(ValueError, match="ToolResult with status outcome_unknown must provide"):
+        ToolResult(
+            invocation_id=ToolInvocationId("inv_unk_01"),
+            tool_name="stripe_charge",
+            status=ToolCallStatus.OUTCOME_UNKNOWN,
+            side_effect=SideEffectType.NON_IDEMPOTENT_WRITE,
+            idempotency_key="ik_unk_01",
+        )
+
+    # COMPLETED status with error raises
+    with pytest.raises(ValueError, match="ToolResult with status COMPLETED must not have error"):
+        ToolResult(
+            invocation_id=ToolInvocationId("inv_comp_01"),
+            tool_name="read_file",
+            status=ToolCallStatus.COMPLETED,
+            side_effect=SideEffectType.READ_ONLY,
+            idempotency_key="ik_comp_01",
+            error="Unexpected error on completed tool",
+        )
+
+    # COMPLETED status with failure_details raises
+    with pytest.raises(
+        ValueError, match="ToolResult with status COMPLETED must not have failure_details"
+    ):
+        ToolResult(
+            invocation_id=ToolInvocationId("inv_comp_02"),
+            tool_name="read_file",
+            status=ToolCallStatus.COMPLETED,
+            side_effect=SideEffectType.READ_ONLY,
+            idempotency_key="ik_comp_02",
+            failure_details=FailureDetails(error_type="Error", message="fail", error_code="FAIL"),
+        )
+
+
+def test_r4_step_result_and_run_result_token_and_failure_invariants() -> None:
+    """R-4 regression test: StepResult & RunResult enforce token matching & failure rules."""
+    now = datetime(2026, 10, 12, 12, 0, 0, tzinfo=UTC)
+    usage = TokenUsage(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+    dec = ModelDecision(
+        decision_id="dec_01",
+        step_id=StepId("step_01"),
+        finish_reason=ModelFinishReason.STOP,
+        token_usage=usage,
+    )
+
+    # StepResult token mismatch raises
+    with pytest.raises(ValueError, match=r"StepResult\.tokens_consumed .* does not match"):
+        StepResult(
+            step_id=StepId("step_01"),
+            run_id=RunId("run_01"),
+            step_number=1,
+            decision=dec,
+            tool_results=(),
+            memories_proposed=0,
+            memories_committed=0,
+            tokens_consumed=200,  # mismatch with usage.total_tokens=150
+            completed_at=now,
+            token_usage=usage,
+        )
+
+    # StepResult inherits token_usage from decision if omitted
+    sr = StepResult(
+        step_id=StepId("step_01"),
+        run_id=RunId("run_01"),
+        step_number=1,
+        decision=dec,
+        tool_results=(),
+        memories_proposed=0,
+        memories_committed=0,
+        tokens_consumed=0,  # auto-derived
+        completed_at=now,
+    )
+    assert sr.tokens_consumed == 150
+    assert sr.token_usage == usage
+
+    # RunResult token mismatch raises
+    with pytest.raises(ValueError, match=r"RunResult\.total_tokens_consumed .* does not match"):
+        RunResult(
+            run_id=RunId("run_01"),
+            namespace_id=NamespaceId("ns_01"),
+            status=RunStatus.COMPLETED,
+            step_count=1,
+            total_tokens_consumed=999,  # mismatch with usage.total_tokens=150
+            final_output="Done",
+            trace_id="tr_01",
+            token_usage=usage,
+        )
+
+    # RunResult FAILED without error or failure_details raises
+    with pytest.raises(ValueError, match="RunResult with status failed must provide"):
+        RunResult(
+            run_id=RunId("run_01"),
+            namespace_id=NamespaceId("ns_01"),
+            status=RunStatus.FAILED,
+            step_count=1,
+            total_tokens_consumed=150,
+            final_output=None,
+            trace_id="tr_01",
+            error=None,
+            failure_details=None,
+        )
+
+    # RunResult COMPLETED with error raises
+    with pytest.raises(ValueError, match="RunResult with status COMPLETED must not have error"):
+        RunResult(
+            run_id=RunId("run_01"),
+            namespace_id=NamespaceId("ns_01"),
+            status=RunStatus.COMPLETED,
+            step_count=1,
+            total_tokens_consumed=150,
+            final_output="Done",
+            trace_id="tr_01",
+            error="Should not be here",
+        )
