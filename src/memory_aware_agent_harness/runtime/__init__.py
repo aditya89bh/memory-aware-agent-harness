@@ -6,6 +6,7 @@ cancellation listeners, and deterministic execution controllers.
 
 from __future__ import annotations
 
+from memory_aware_agent_harness.runtime.adapters import FakeModelAdapter
 from memory_aware_agent_harness.runtime.cancellation import (
     AbortDispatcher,
     CancellationListener,
@@ -28,6 +29,7 @@ __all__ = [
     "AbortDispatcher",
     "BudgetGuard",
     "CancellationListener",
+    "FakeModelAdapter",
     "LifecycleState",
     "OrphanedRunError",
     "OrphanedRunRecoveryHandler",
