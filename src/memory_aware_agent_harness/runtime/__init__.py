@@ -11,6 +11,14 @@ from memory_aware_agent_harness.runtime.cancellation import (
     AbortDispatcher,
     CancellationListener,
 )
+from memory_aware_agent_harness.runtime.events import (
+    DiagnosticEventEmitter,
+    DiagnosticHook,
+    EventCollector,
+    RuntimeEvent,
+    RuntimeEventListener,
+    RuntimeEventType,
+)
 from memory_aware_agent_harness.runtime.fsm import RunFSM, StepFSM
 from memory_aware_agent_harness.runtime.guards import BudgetGuard
 from memory_aware_agent_harness.runtime.recovery import (
@@ -31,12 +39,18 @@ __all__ = [
     "AgentRuntime",
     "BudgetGuard",
     "CancellationListener",
+    "DiagnosticEventEmitter",
+    "DiagnosticHook",
+    "EventCollector",
     "FakeModelAdapter",
     "LifecycleState",
     "OrphanedRunError",
     "OrphanedRunRecoveryHandler",
     "RunFSM",
     "RunResultBuilder",
+    "RuntimeEvent",
+    "RuntimeEventListener",
+    "RuntimeEventType",
     "StepFSM",
     "StepOutcomeCompiler",
     "SystemClock",

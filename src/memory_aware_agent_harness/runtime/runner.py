@@ -42,6 +42,11 @@ from memory_aware_agent_harness.runtime.cancellation import (
     AbortDispatcher,
     CancellationListener,
 )
+from memory_aware_agent_harness.runtime.events import (
+    DiagnosticEventEmitter,
+    RuntimeEventListener,
+    RuntimeEventType,
+)
 from memory_aware_agent_harness.runtime.fsm import StepFSM
 from memory_aware_agent_harness.runtime.guards import BudgetGuard
 from memory_aware_agent_harness.runtime.result_builder import RunResultBuilder
@@ -65,6 +70,8 @@ class AgentRuntime:
         clock: ClockPort | None = None,
         id_generator: IdGeneratorPort | None = None,
         budgets: RunBudgets | None = None,
+        event_listeners: Sequence[RuntimeEventListener] = (),
+        strict_diagnostics: bool = False,
     ) -> None:
         self.model = model
         self.tools: tuple[ToolProtocol, ...] = tuple(tools) if tools is not None else ()
@@ -73,6 +80,12 @@ class AgentRuntime:
         self.clock = clock if clock is not None else SystemClock()
         self.id_generator = id_generator if id_generator is not None else SystemIdGenerator()
         self.default_budgets = budgets if budgets is not None else RunBudgets()
+        self.event_emitter = DiagnosticEventEmitter(
+            clock=self.clock,
+            id_generator=self.id_generator,
+            listeners=event_listeners,
+            strict=strict_diagnostics,
+        )
 
     def run(
         self,
@@ -117,6 +130,11 @@ class AgentRuntime:
         result_builder = RunResultBuilder(state)
 
         state.begin_run()
+        self.event_emitter.emit(
+            RuntimeEventType.RUN_STARTED,
+            run_id=state.run_id,
+            payload={"task": task, "namespace_id": str(namespace_id)},
+        )
         final_output: str | None = None
 
         while not state.is_terminal:
@@ -129,6 +147,12 @@ class AgentRuntime:
                 break
 
             step_id, step_fsm = state.begin_step()
+            self.event_emitter.emit(
+                RuntimeEventType.STEP_STARTED,
+                run_id=state.run_id,
+                step_id=step_id,
+                phase=StepState.NOT_STARTED,
+            )
 
             try:
                 step_result = self._execute_step(
@@ -174,6 +198,15 @@ class AgentRuntime:
                 state.fail(failure, reason=failure.message)
                 break
 
+        self.event_emitter.emit(
+            RuntimeEventType.RUN_TERMINATED,
+            run_id=state.run_id,
+            payload={
+                "status": str(state.status),
+                "step_count": state.step_count,
+                "tokens_consumed": state.cumulative_tokens.total_tokens,
+            },
+        )
         return result_builder.build(final_output=final_output)
 
     def _execute_step(
@@ -188,6 +221,12 @@ class AgentRuntime:
         """Execute the full 8-phase step lifecycle sequence."""
         # --- Phase 1: RETRIEVAL ---
         step_fsm.transition_to(StepState.RETRIEVING)
+        self.event_emitter.emit(
+            RuntimeEventType.PHASE_TRANSITION,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.RETRIEVING,
+        )
         cancellation_listener.check()
 
         included_items: list[ContextItem] = []
@@ -218,6 +257,12 @@ class AgentRuntime:
 
         # --- Phase 2: COMPILE CONTEXT ---
         step_fsm.transition_to(StepState.COMPILING_CONTEXT)
+        self.event_emitter.emit(
+            RuntimeEventType.PHASE_TRANSITION,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.COMPILING_CONTEXT,
+        )
         cancellation_listener.check()
 
         manifest = ContextManifest(
@@ -232,6 +277,12 @@ class AgentRuntime:
 
         # --- Phase 3: DECIDE ---
         step_fsm.transition_to(StepState.DECIDING)
+        self.event_emitter.emit(
+            RuntimeEventType.PHASE_TRANSITION,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.DECIDING,
+        )
         cancellation_listener.check()
 
         model_ctx = ModelCallContext(
@@ -245,17 +296,46 @@ class AgentRuntime:
         )
 
         tools_schema: list[Mapping[str, Any]] = [t.get_schema() for t in self.tools]
+        self.event_emitter.emit(
+            RuntimeEventType.MODEL_INVOKED,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.DECIDING,
+        )
         decision = self.model.decide(manifest, tools_schema, model_ctx)
+        self.event_emitter.emit(
+            RuntimeEventType.MODEL_RESPONDED,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.DECIDING,
+            payload={
+                "finish_reason": str(decision.finish_reason),
+                "tool_calls_count": len(decision.tool_calls),
+            },
+        )
 
         tool_results: list[ToolResult] = []
 
         # --- Phase 4: DISPATCH TOOL (if requested) ---
         if decision.finish_reason == ModelFinishReason.TOOL_CALL or len(decision.tool_calls) > 0:
             step_fsm.transition_to(StepState.DISPATCHING_TOOL)
+            self.event_emitter.emit(
+                RuntimeEventType.PHASE_TRANSITION,
+                run_id=state.run_id,
+                step_id=step_id,
+                phase=StepState.DISPATCHING_TOOL,
+            )
             cancellation_listener.check()
 
             for call in decision.tool_calls:
                 cancellation_listener.check()
+                self.event_emitter.emit(
+                    RuntimeEventType.TOOL_INVOKED,
+                    run_id=state.run_id,
+                    step_id=step_id,
+                    phase=StepState.DISPATCHING_TOOL,
+                    payload={"tool_name": call.tool_name, "call_id": call.call_id},
+                )
                 inv_id = ToolInvocationId(self.id_generator.generate_id(f"inv_{call.tool_name}"))
                 tool = self.tools_by_name.get(call.tool_name)
 
@@ -276,6 +356,13 @@ class AgentRuntime:
                             error=f"Tool '{call.tool_name}' not found",
                             failure_details=fail_details,
                         )
+                    )
+                    self.event_emitter.emit(
+                        RuntimeEventType.TOOL_COMPLETED,
+                        run_id=state.run_id,
+                        step_id=step_id,
+                        phase=StepState.DISPATCHING_TOOL,
+                        payload={"tool_name": call.tool_name, "status": str(ToolCallStatus.FAILED)},
                     )
                     continue
 
@@ -325,23 +412,62 @@ class AgentRuntime:
                             execution_time_ms=t_elapsed_ms,
                         )
                     )
+                self.event_emitter.emit(
+                    RuntimeEventType.TOOL_COMPLETED,
+                    run_id=state.run_id,
+                    step_id=step_id,
+                    phase=StepState.DISPATCHING_TOOL,
+                    payload={
+                        "tool_name": call.tool_name,
+                        "status": str(tool_results[-1].status),
+                    },
+                )
 
         # --- Phase 5: EXTRACT MEMORIES ---
         step_fsm.transition_to(StepState.EXTRACTING_MEMORIES)
+        self.event_emitter.emit(
+            RuntimeEventType.PHASE_TRANSITION,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.EXTRACTING_MEMORIES,
+        )
         cancellation_listener.check()
 
         # --- Phase 6: COMMIT MEMORIES ---
         step_fsm.transition_to(StepState.COMMITTING_MEMORIES)
+        self.event_emitter.emit(
+            RuntimeEventType.PHASE_TRANSITION,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.COMMITTING_MEMORIES,
+        )
         cancellation_listener.check()
 
         # --- Phase 7: CHECKPOINTING ---
         step_fsm.transition_to(StepState.CHECKPOINTING)
+        self.event_emitter.emit(
+            RuntimeEventType.PHASE_TRANSITION,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.CHECKPOINTING,
+        )
         cancellation_listener.check()
 
         # --- Phase 8: COMPILE STEP OUTCOME & COMPLETED ---
-        return step_compiler.compile_step(
+        step_result = step_compiler.compile_step(
             decision=decision,
             tool_results=tool_results,
             memories_proposed=0,
             memories_committed=0,
         )
+        self.event_emitter.emit(
+            RuntimeEventType.STEP_COMPLETED,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.COMPLETED,
+            payload={
+                "step_id": str(step_id),
+                "finish_reason": str(decision.finish_reason),
+            },
+        )
+        return step_result
