@@ -16,6 +16,7 @@ from memory_aware_agent_harness.runtime.recovery import (
     OrphanedRunError,
     OrphanedRunRecoveryHandler,
 )
+from memory_aware_agent_harness.runtime.result_builder import RunResultBuilder
 from memory_aware_agent_harness.runtime.state import (
     LifecycleState,
     SystemClock,
@@ -31,6 +32,7 @@ __all__ = [
     "OrphanedRunError",
     "OrphanedRunRecoveryHandler",
     "RunFSM",
+    "RunResultBuilder",
     "StepFSM",
     "StepOutcomeCompiler",
     "SystemClock",
