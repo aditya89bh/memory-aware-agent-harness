@@ -11,7 +11,7 @@
 | Phase | Focus Area | Target Commits | Cumulative Commits | Milestone / Release Gate |
 |---|---|:---:|:---:|---|
 | **Phase 0** | Foundation, Specs, Package Setup & Remediation | 35 | 35 | Project skeleton, typed contracts, & approved specs |
-| **Phase 1** | Core Runtime & Lifecycle | 26 | 61 | FSM execution & budget bounds |
+| **Phase 1** | Core Runtime & Lifecycle | 26 | 61 | **v0.1.0 (Core Single-Agent Runtime - COMPLETE)** |
 | **Phase 2** | Memory Model & Storage Abstractions | 31 | 92 | Unified SQLite WAL persistence |
 | **Phase 3** | Retrieval, Ranking, Context Compiler | 31 | 123 | Multi-signal ranker & fenced context |
 | **Phase 4** | Memory Writes, Consolidation, Forgetting | 28 | 151 | Quarantined writes & verifiable deletion |
@@ -71,20 +71,53 @@ Targeted remediation following independent reproduction of H-01, H-03, and N-01:
 32. `3172866`: `docs(remediation): reconcile audit matrix with full finding taxonomy and residual items` (Matrix finding taxonomy reconciliation: full Claude finding catalog, explicit statuses, commit citations, technical limits)
 33. `a7c3f4b`: `docs(architecture): reconcile FSM diagrams, durability, erasure, and security boundaries` (Architecture, security, and ADR reconciliation: FSM legal transitions, SQLite secure_delete, durability trade-offs, SSD wear-leveling)
 34. `4083de7`: `docs(roadmap): reconcile commit history, traceability, and Phase 0 report` (Roadmap traceability and Phase 0 report synchronization across all 34 commits)
-35. `HEAD`: `docs(remediation): reconcile original finding taxonomy, residual items, and schema safeguards` (Final Phase 0 evidence reconciliation: original finding IDs, honest statuses, schema safeguards, anti-resurrection)
+35. `320c12a`: `docs(remediation): reconcile original finding taxonomy, residual items, and schema safeguards` (Final Phase 0 evidence reconciliation: original finding IDs, honest statuses, schema safeguards, anti-resurrection)
 
-### 2.4 Deferred Findings & Future Phase Traceability
+### 2.5 Accounting of Phase 1 Commits (Commits 36 to 61)
+The following 26 commits delivered the operational core single-agent runtime:
+- **Batch A: Contracts & Engineering Foundation (Commits 36 to 43):**
+  36. `d60ab95`: `fix(contracts): enforce serializable metadata roundtripping and strict primitive validation` (R-1 closed)
+  37. `ebc452a`: `fix(contracts): harden FrozenDict against inherited dict mutation bypasses` (R-2 closed)
+  38. `1782dfc`: `feat(runtime): introduce live cancellation token for in-progress execution (R-3)` (R-3 closed)
+  39. `d2fbd36`: `fix(contracts): enforce consistent token accounting and structured failure invariants (R-4)` (R-4 closed)
+  40. `6627255`: `fix(contracts): enforce strict enum validation and reject lossy primitive coercion (M-03)` (M-03 closed)
+  41. `5884c35`: `feat(validation): implement Pydantic v2 boundary validation without duplicate models`
+  42. `1283d1b`: `chore(ci): align exact ruff version requirement and enforce repository-wide lint checks (M-06)` (M-06 closed)
+  43. `7550ad6`: `chore(packaging): validate sdist and wheel installation compatibility in CI (M-11)` (M-11 closed)
+- **Batch B: Core Runtime FSM & Lifecycle Controller (Commits 44 to 51):**
+  44. `23b36a3`: `feat(runtime): implement RunFSM and StepFSM with legal transition validation` (H-02 engine)
+  45. `62bb0a3`: `feat(runtime): implement LifecycleState container tracking run and step lifecycles`
+  46. `18f6391`: `feat(runtime): implement budget exhaustion guards for step, token, and time limits`
+  47. `25e4dfa`: `feat(runtime): implement live cancellation listener and abort dispatcher`
+  48. `11c9d4c`: `feat(runtime): implement orphaned-run recovery handler and crash reconciliation`
+  49. `0ef023a`: `feat(runtime): implement step outcome compiler with monotonic token accounting`
+  50. `236ff89`: `feat(runtime): implement terminal RunResult builder enforcing outcome invariants`
+  51. `75796e4`: `test(runtime): add comprehensive unit and failure tests for runtime FSM and lifecycle transitions`
+- **Batch C: Deterministic Agent Loop & Model Adapter (Commits 52 to 57):**
+  52. `428b2c1`: `feat(runtime): implement FakeModelAdapter for deterministic offline execution`
+  53. `88d7916`: `feat(runtime): implement AgentRuntime bounded execution loop runner`
+  54. `a3a1029`: `feat(runtime): wire complete 8-phase step lifecycle sequence in AgentRuntime`
+  55. `95c9231`: `feat(runtime): add cooperative cancellation checkpoints throughout execution loop`
+  56. `0475ca4`: `feat(runtime): add diagnostic hooks and lifecycle event emission`
+  57. `b794822`: `test(runtime): add end-to-end deterministic execution loop tests with FakeModelAdapter`
+- **Batch D: Quality Gates, CLI Demo & Documentation (Commits 58 to 61):**
+  58. `5b9b0ee`: `test(runtime): validate >=85% branch coverage across all runtime modules` (M-07 closed)
+  59. `b9a360b`: `feat(cli): implement runnable offline demo CLI`
+  60. `HEAD`: `docs(remediation): update remediation matrix and Phase 1 roadmap status`
+  61. `Pending`: `chore(release): lock Phase 1 milestone deliverables`
+
+### 2.6 Deferred Findings & Future Phase Traceability
 All runtime implementation requirements and findings deferred from Phase 0 are strictly tracked against their scheduled implementation phases:
-- **Phase 1 (Core Runtime & Lifecycle):**
-  - **R-1:** Metadata round-trip validation and normalization across nested structures.
-  - **R-2:** Deep immutability hardening for `FrozenDict` and protection against inherited dict bypasses.
-  - **R-3:** Live cooperative cancellation signaling (cancellation as a live event/signal rather than a frozen snapshot).
-  - **R-4:** Token accounting invariants (monotonic consumption, budget bounds) and mandatory failure detail enforcement.
-  - **M-03:** Runtime input validation, enum coercion, and boundary validation.
-  - **M-06:** Pinned Ruff linter version and repository-wide CI quality gates across runtime packages.
-  - **M-07:** Wheel-installed package test execution and substantive test coverage gate ($\ge 85\%$).
-  - **M-11:** Setuptools packaging compatibility matrix and distribution verification.
-  - **H-02:** Runtime FSM execution engine, step lifecycle execution, transition validation against `LEGAL_RUN_TRANSITIONS` & `LEGAL_STEP_TRANSITIONS`, `RunBudgets` enforcement, orphaned-run recovery execution, and cancellation/timeout handling.
+- **Phase 1 (Core Runtime & Lifecycle) — COMPLETE:**
+  - **R-1:** Metadata round-trip validation and normalization across nested structures (RESOLVED).
+  - **R-2:** Deep immutability hardening for `FrozenDict` and protection against inherited dict bypasses (RESOLVED).
+  - **R-3:** Live cooperative cancellation signaling via `threading.Event` and abort dispatch (RESOLVED).
+  - **R-4:** Monotonic token accounting and mandatory failure detail enforcement (RESOLVED).
+  - **M-03:** Runtime input validation, enum coercion, and Pydantic v2 boundary validation (RESOLVED).
+  - **M-06:** Pinned Ruff linter version and repository-wide CI quality gates (RESOLVED).
+  - **M-07:** Substantive test coverage gate ($\ge 85\%$ branch coverage enforced across all modules) (RESOLVED).
+  - **M-11:** Setuptools packaging compatibility matrix and runnable entrypoint (RESOLVED).
+  - **H-02:** Runtime FSM execution engine, step lifecycle execution, transition validation, `RunBudgets` enforcement, orphaned-run recovery, and cancellation/timeout handling (RESOLVED).
 - **Phase 2 (Memory Model & Storage Abstractions):**
   - **M-04:** Scored retrieval and deterministic storage interfaces (`MemoryStoreProtocol` scoring, deterministic time, versioning, and lifecycle operations).
   - **M-05:** Storage scoping across run, branch, namespace, and provenance (`namespace_id`, `run_id`, `branch_id`, and `origin` scoping; direct `namespace_id` columns on child tables `checkpoints` and `trace_events`).
