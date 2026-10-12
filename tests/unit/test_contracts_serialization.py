@@ -793,3 +793,33 @@ def test_r1_nested_invalid_metadata_rejected() -> None:
             updated_at=now,
             metadata={"outer": {42: "bad_key"}},
         )
+
+
+def test_r2_frozendict_inherited_methods_mutation_defense() -> None:
+    """R-2 regression test: inherited dict methods cannot bypass FrozenDict immutability."""
+    fd = FrozenDict({"a": 1, "b": 2})
+
+    # 1. Re-initialization via __init__ raises TypeError
+    with pytest.raises(TypeError, match="cannot be re-initialized"):
+        fd.__init__({"hacked": True})  # type: ignore[misc]
+
+    assert "hacked" not in fd
+    assert fd == {"a": 1, "b": 2}
+
+    # 2. copy() returns self without creating a mutable dict
+    fd_copy = fd.copy()
+    assert fd_copy is fd
+    with pytest.raises(TypeError):
+        _attempt_setitem(fd_copy, "new", 123)
+
+    # 3. fromkeys() returns an immutable FrozenDict
+    fk = FrozenDict.fromkeys(["k1", "k2"], "default")
+    assert isinstance(fk, FrozenDict)
+    assert fk == {"k1": "default", "k2": "default"}
+    with pytest.raises(TypeError):
+        _attempt_setitem(fk, "k1", "mutated")
+
+    # 4. In-place or (__ior__) raises TypeError
+    with pytest.raises(TypeError):
+        fd |= {"c": 3}
+    assert "c" not in fd

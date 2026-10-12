@@ -33,7 +33,10 @@ class FrozenDict(dict[Any, Any]):
     """Immutable, hashable dictionary that is safe for pickling, deepcopy, and serialization."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        if getattr(self, "_initialized", False):
+            raise TypeError("FrozenDict is immutable and cannot be re-initialized")
         super().__init__(*args, **kwargs)
+        self._initialized: bool = True
         self._hash: int | None = None
 
     def __setitem__(self, key: Any, value: Any) -> None:
@@ -65,6 +68,13 @@ class FrozenDict(dict[Any, Any]):
 
     def __ror__(self, other: Any) -> FrozenDict:
         return FrozenDict(super().__ror__(dict(other)))
+
+    def copy(self) -> Self:
+        return self
+
+    @classmethod
+    def fromkeys(cls, iterable: Any, value: Any = None) -> Self:
+        return cls(dict.fromkeys(iterable, value))
 
     def __hash__(self) -> int:  # type: ignore[override]
         if self._hash is None:
