@@ -7,7 +7,7 @@
 
 ---
 
-## 1. True Git Log Commit History (31 Commits Total)
+## 1. True Git Log Commit History (34 Commits Total)
 
 The table below reflects the exact Git commit history directly from `git log --reverse`:
 
@@ -43,7 +43,10 @@ The table below reflects the exact Git commit history directly from `git log --r
 | **28** | `8deb860` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(report)` | docs(report): compile independent review remediation matrix and validation evidence |
 | **29** | `a2b751b` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `fix(contracts)` | fix(contracts): replace MappingProxyType with FrozenDict and harden serialization |
 | **30** | `12d05b6` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `feat(contracts)` | feat(contracts): require execution contexts, integrate token usage and failure details |
-| **31** | `HEAD` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(remediation)` | docs(remediation): reconcile git commit history and audit matrix for review round 2 |
+| **31** | `fef9606` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(remediation)` | docs(remediation): reconcile git commit history and audit matrix for review round 2 |
+| **32** | `3172866` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(remediation)` | docs(remediation): reconcile audit matrix with full finding taxonomy and residual items |
+| **33** | `a7c3f4b` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(architecture)` | docs(architecture): reconcile FSM diagrams, durability, erasure, and security boundaries |
+| **34** | `HEAD` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(roadmap)` | docs(roadmap): reconcile commit history, traceability, and Phase 0 report |
 
 ---
 
@@ -77,9 +80,9 @@ The table below reflects the exact Git commit history directly from `git log --r
 - **Ruff Check:** Passed (`All checks passed!`, 0 errors).
 - **Ruff Format:** Passed (`17 files already formatted`).
 - **Strict Mypy:** Passed (`Success: no issues found in 17 source files`).
-- **Pytest:** Passed (57 passed in 0.07s).
+- **Pytest:** Passed (57 passed in 0.04s).
 - **Package Build:** Passed (`.tar.gz` and `.whl` generated with zero warnings).
 - **Wheel Smoke Test:** Tested in isolated virtual environment outside repository root; verified version, contracts, deterministic doubles, and `py.typed` marker.
 - **Working Tree:** Clean.
 - **Runtime Code:** Strictly zero Phase 1 runtime implementation written (domain contracts and deterministic test doubles only).
-- **Authorship Attribution:** `Aditya bhatia <aditya89bh@gmail.com>` across all 31 commits. Zero AI trailers.
+- **Authorship Attribution:** `Aditya bhatia <aditya89bh@gmail.com>` across all 34 commits. Zero AI trailers.

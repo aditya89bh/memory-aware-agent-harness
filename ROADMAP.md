@@ -10,10 +10,10 @@
 
 | Phase | Focus Area | Target Commits | Cumulative Commits | Milestone / Release Gate |
 |---|---|:---:|:---:|---|
-| **Phase 0** | Foundation, Specs, Package Setup & Remediation | 31 | 31 | Project skeleton, typed contracts, & approved specs |
-| **Phase 1** | Core Runtime & Lifecycle | 28 | 59 | FSM execution & budget bounds |
-| **Phase 2** | Memory Model & Storage Abstractions | 32 | 91 | Unified SQLite WAL persistence |
-| **Phase 3** | Retrieval, Ranking, Context Compiler | 32 | 123 | Multi-signal ranker & fenced context |
+| **Phase 0** | Foundation, Specs, Package Setup & Remediation | 34 | 34 | Project skeleton, typed contracts, & approved specs |
+| **Phase 1** | Core Runtime & Lifecycle | 27 | 61 | FSM execution & budget bounds |
+| **Phase 2** | Memory Model & Storage Abstractions | 31 | 92 | Unified SQLite WAL persistence |
+| **Phase 3** | Retrieval, Ranking, Context Compiler | 31 | 123 | Multi-signal ranker & fenced context |
 | **Phase 4** | Memory Writes, Consolidation, Forgetting | 28 | 151 | Quarantined writes & verifiable deletion |
 | **Phase 5** | Tool Runtime & Routing | 25 | 176 | **v0.1.0 (Core Lifecycle MVP)** |
 | **Phase 6** | Checkpointing, Resume, Rollback, Branching | 25 | 201 | **v0.2.0 (Continuity & Recovery)** |
@@ -63,11 +63,32 @@ Addressing Claude Code independent architecture review findings (H-01 through H-
 27. `dcf1ebe`: `test(remediation): add comprehensive negative-path and failure test suite` (M-10)
 28. `8deb860`: `docs(report): compile independent review remediation matrix and validation evidence` (Round 1 report)
 
-### 2.3 Independent Review Remediation Round 2 Commits (Commits 29 to 31)
+### 2.3 Independent Review Remediation Round 2 Commits (Commits 29 to 34)
 Targeted remediation following independent reproduction of H-01, H-03, and N-01:
 29. `a2b751b`: `fix(contracts): replace MappingProxyType with FrozenDict and harden serialization` (H-01 complete fix: hash, deepcopy, pickle, asdict, UTC equivalence, NaN/Inf and invalid metadata rejection)
 30. `12d05b6`: `feat(contracts): require execution contexts, integrate token usage and failure details` (H-03 complete fix: mandatory contexts, cancellation/deadline semantics, TokenUsage/FailureDetails integration, structured exception fields)
-31. `HEAD`: `docs(remediation): reconcile git commit history and audit matrix for review round 2` (N-01 complete fix: git log synchronization, finding classifications, roadmap 300–350 reconciliation)
+31. `fef9606`: `docs(remediation): reconcile git commit history and audit matrix for review round 2` (N-01 complete fix: git log synchronization, finding classifications, roadmap 300–350 reconciliation)
+32. `3172866`: `docs(remediation): reconcile audit matrix with full finding taxonomy and residual items` (Matrix finding taxonomy reconciliation: full Claude finding catalog, explicit statuses, commit citations, technical limits)
+33. `a7c3f4b`: `docs(architecture): reconcile FSM diagrams, durability, erasure, and security boundaries` (Architecture, security, and ADR reconciliation: FSM legal transitions, SQLite secure_delete, durability trade-offs, SSD wear-leveling)
+34. `HEAD`: `docs(roadmap): reconcile commit history, traceability, and Phase 0 report` (Roadmap traceability and Phase 0 report synchronization across all 34 commits)
+
+### 2.4 Deferred Findings & Future Phase Traceability
+All runtime implementation requirements deferred from Phase 0 are strictly tracked against their scheduled implementation phases:
+- **Phase 1 (Core Runtime & Lifecycle):** Runtime FSM execution engine, step lifecycle execution, transition validation against `LEGAL_RUN_TRANSITIONS` & `LEGAL_STEP_TRANSITIONS`, `RunBudgets` enforcement, and cancellation/timeout handling.
+- **Phase 2 (Memory Model & Storage Abstractions):** Unified SQLite WAL persistence (`memory_records`, `runs`, `run_steps`), `PRAGMA secure_delete = ON`, configurable `synchronous = NORMAL/FULL`, parameterized `WHERE namespace_id = ?` relational query isolation.
+- **Phase 3 (Retrieval, Ranking, Context Compiler):** Multi-signal retrieval scoring ($w_{rel}, w_{rec}, w_{sal}, w_{freq}, P_{decay}$), prompt budget allocation, and structural XML escaping (`&`, `<`, `>`, `"`, `'`) for untrusted memory fencing.
+- **Phase 4 (Memory Writes, Consolidation, Forgetting):** Memory candidate quarantine, write policy evaluation, episodic-to-semantic consolidation pipelines, multi-boundary verifiable forgetting engine, and durable tombstones.
+- **Phase 5 (Tool Runtime & Routing):** Sandboxed tool dispatcher, Pydantic v2 argument validation, intent registration (`status = 'pending'`), idempotency checking, and crash recovery with `OUTCOME_UNKNOWN`.
+- **Phase 6 (Checkpointing, Resume, Rollback, Branching):** State checkpointing, branch DAG, safe resume, dirty rollback detection (`PARTIAL_DIRTY_ROLLBACK`), and fallible compensation execution.
+- **Phase 7 (Tracing, Provenance, Event Model):** Append-only trace log, automated PII/secret redactor, JSONL exporter, and deterministic SHA-256 state hashing across transitions.
+- **Phase 8 (Replay & Deterministic Hooks):** Trace replayer and bit-for-bit replay verification with deterministic doubles.
+- **Phase 9 (Evaluation Framework & Metrics):** 3-baseline comparative evaluation runner (Stateless, Naive RAG, Memory-Aware).
+- **Phase 10 (Benchmarks & Regression Suites):** Reproducible offline benchmark suites and statistical reporting.
+- **Phase 11 (Integrations & Realistic Demos):** Three runnable end-to-end production scenarios and model/tool adapters.
+- **Phase 12 (Hardening, Docs, Packaging, Release):** Cryptographic HMAC state authentication, schema migration verification, security audit, packaging distribution freeze.
+
+> [!NOTE]
+> **Implementation Status:** Work on Phases 1 through 12 is explicitly unstarted. Phase 0 contains exclusively contracts, deterministic test doubles, packaging, and validation scaffolding.
 
 ---
 
@@ -199,7 +220,7 @@ Every benchmark suite evaluates the agent across three explicit configurations u
 | **RSK-04** | Compliance | Deleted memories resurface in retrieval or persist in derived knowledge. | **Critical** | Low | SQL-level tombstone exclusion invariant; WAL frame truncation (`PRAGMA wal_checkpoint(TRUNCATE)`); lineage propagation to derived memories (`ORIGIN_PURGED`). |
 | **RSK-05** | Reliability | Harness crashes mid-step leaving database or tool state corrupted. | **High** | Medium | SQLite WAL transactions; crash-safe two-phase step commit protocol (intent registration $\rightarrow$ dispatch $\rightarrow$ outcome update $\rightarrow$ atomic commit); `OUTCOME_UNKNOWN` handling on recovery. |
 | **RSK-06** | Testing | Test suite flakiness due to non-deterministic external LLMs or APIs. | **High** | High | First-class deterministic test doubles (`FakeModelAdapter`, `DeterministicClock`, `SeedableRNG`); zero live API calls in CI. |
-| **RSK-07** | Scope | Project scope expands into distributed multi-agent swarm framework. | **Medium** | Medium | Strict adherence to Non-Goals in [SPEC.md](file:///Users/apple/Projects/memory-aware-agent-harness/SPEC.md); single-agent, single-process focus. |
+| **RSK-07** | Scope | Project scope expands into distributed multi-agent swarm framework. | **Medium** | Medium | Strict adherence to Non-Goals in [SPEC.md](SPEC.md); single-agent, single-process focus. |
 | **RSK-08** | Packaging | Packaging deferred to project end results in last-minute dependency conflicts. | **Medium** | High | Introduce minimal `pyproject.toml`, linters, and smoke CI in Phase 0 (Task 0.9). |
 
 ---
@@ -208,11 +229,11 @@ Every benchmark suite evaluates the agent across three explicit configurations u
 
 Before closing Phase 0 and initiating Phase 1 implementation commits, the following must be formally verified and approved:
 
-- [ ] Core thesis and empirical hypothesis accepted ([SPEC.md](file:///Users/apple/Projects/memory-aware-agent-harness/SPEC.md)).
+- [ ] Core thesis and empirical hypothesis accepted ([SPEC.md](SPEC.md)).
 - [ ] Four behavioral memory categories in unified SQLite schema accepted.
 - [ ] Explicit Run States vs. Step Operations FSM accepted.
 - [ ] Distinguish runtime rollback from fallible external compensation accepted.
-- [ ] 13-phase roadmap with 340-commit target cadence accepted ([ROADMAP.md](file:///Users/apple/Projects/memory-aware-agent-harness/ROADMAP.md)).
+- [ ] 13-phase roadmap with 340-commit target cadence accepted ([ROADMAP.md](ROADMAP.md)).
 - [ ] Accounting of 3 existing commits + 13 remaining Phase 0 tasks accepted.
 - [ ] Strict quality gates (Python 3.11+, strict mypy, ruff, 200–300 tests) accepted.
 - [ ] Zero-API-key testing and benchmark requirement accepted.
