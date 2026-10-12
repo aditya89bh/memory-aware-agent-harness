@@ -103,8 +103,8 @@ The following 26 commits delivered the operational core single-agent runtime:
 - **Batch D: Quality Gates, CLI Demo & Documentation (Commits 58 to 61):**
   58. `5b9b0ee`: `test(runtime): validate >=85% branch coverage across all runtime modules` (M-07 closed)
   59. `b9a360b`: `feat(cli): implement runnable offline demo CLI`
-  60. `HEAD`: `docs(remediation): update remediation matrix and Phase 1 roadmap status`
-  61. `Pending`: `chore(release): lock Phase 1 milestone deliverables`
+  60. `30c850b`: `docs(remediation): update remediation matrix and Phase 1 roadmap status`
+  61. `HEAD`: `chore(release): lock Phase 1 milestone deliverables`
 
 ### 2.6 Deferred Findings & Future Phase Traceability
 All runtime implementation requirements and findings deferred from Phase 0 are strictly tracked against their scheduled implementation phases:

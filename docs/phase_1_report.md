@@ -46,8 +46,8 @@ The table below reflects the complete Phase 1 commit sequence:
 | **57** | `b794822` | `test(runtime)` | add end-to-end deterministic execution loop tests with FakeModelAdapter | Integration tests: multi-step tools, flaky tool recovery, budget limits |
 | **58** | `5b9b0ee` | `test(runtime)` | validate >=85% branch coverage across all runtime modules | Closed M-07: enforced $\ge 85\%$ branch coverage in pytest / CI |
 | **59** | `b9a360b` | `feat(cli)` | implement runnable offline demo CLI | Console entrypoint `memory-agent` with `--scenario`, `-v`, `--json` |
-| **60** | `HEAD` | `docs(remediation)` | update remediation matrix and Phase 1 roadmap status | Documentation synchronization, finding closure tracking |
-| **61** | Planned | `chore(release)` | lock Phase 1 milestone deliverables | Phase 1 milestone release lock |
+| **60** | `30c850b` | `docs(remediation)` | update remediation matrix and Phase 1 roadmap status | Documentation synchronization, finding closure tracking |
+| **61** | `HEAD` | `chore(release)` | lock Phase 1 milestone deliverables | Phase 1 milestone release lock |
 
 ---
 
