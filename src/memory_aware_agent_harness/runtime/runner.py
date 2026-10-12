@@ -15,6 +15,7 @@ from memory_aware_agent_harness.contracts import (
     ClockPort,
     ContextItem,
     ContextManifest,
+    ExecutionCancelledError,
     FailureDetails,
     IdGeneratorPort,
     MemoryKind,
@@ -23,6 +24,7 @@ from memory_aware_agent_harness.contracts import (
     ModelFinishReason,
     ModelPort,
     NamespaceId,
+    PolicyViolationError,
     RunBudgets,
     RunId,
     RunResult,
@@ -36,7 +38,10 @@ from memory_aware_agent_harness.contracts import (
     ToolProtocol,
     ToolResult,
 )
-from memory_aware_agent_harness.runtime.cancellation import CancellationListener
+from memory_aware_agent_harness.runtime.cancellation import (
+    AbortDispatcher,
+    CancellationListener,
+)
 from memory_aware_agent_harness.runtime.fsm import StepFSM
 from memory_aware_agent_harness.runtime.guards import BudgetGuard
 from memory_aware_agent_harness.runtime.result_builder import RunResultBuilder
@@ -134,6 +139,14 @@ class AgentRuntime:
                     step_compiler=step_compiler,
                     cancellation_listener=cancellation_listener,
                 )
+            except ExecutionCancelledError as exc:
+                dispatcher = AbortDispatcher(state)
+                dispatcher.dispatch_cancellation(reason=str(exc))
+                break
+            except PolicyViolationError as exc:
+                dispatcher = AbortDispatcher(state)
+                dispatcher.dispatch_policy_abort(exc)
+                break
             except Exception as exc:
                 failure = FailureDetails(
                     error_type=type(exc).__name__,
@@ -290,6 +303,8 @@ class AgentRuntime:
                             execution_time_ms=t_elapsed_ms,
                         )
                     )
+                except (ExecutionCancelledError, PolicyViolationError):
+                    raise
                 except Exception as exc:
                     t_elapsed_ms = (time.perf_counter() - t_start) * 1000.0
                     fail_details = FailureDetails(
