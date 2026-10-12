@@ -61,14 +61,18 @@ class StepOutcomeCompiler:
             )
 
         # Resolve effective token usage
-        eff_tokens = token_usage
-        if eff_tokens is None and decision.token_usage is not None:
+        eff_tokens: TokenUsage
+        if self.state.current_step_tokens.total_tokens > 0 and token_usage is None:
+            eff_tokens = self.state.current_step_tokens
+        elif token_usage is not None:
+            eff_tokens = token_usage
+            self.state.record_tokens(eff_tokens)
+        elif decision.token_usage is not None:
             eff_tokens = decision.token_usage
-        if eff_tokens is None:
+            self.state.record_tokens(eff_tokens)
+        else:
             eff_tokens = TokenUsage.zero()
-
-        # Monotonically track in state
-        self.state.record_tokens(eff_tokens)
+            self.state.record_tokens(eff_tokens)
 
         # Resolve timestamp
         resolved_time = completed_at if completed_at is not None else self.state.clock.now()

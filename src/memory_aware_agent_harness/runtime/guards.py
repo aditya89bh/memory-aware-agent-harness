@@ -9,6 +9,7 @@ from __future__ import annotations
 from memory_aware_agent_harness.contracts import (
     BudgetExceededError,
     RunBudgets,
+    RunStatus,
 )
 from memory_aware_agent_harness.runtime.state import LifecycleState
 
@@ -62,6 +63,8 @@ class BudgetGuard:
             True if budgets are healthy and execution may proceed.
             False if a budget was breached and run state transitioned to BUDGET_EXHAUSTED.
         """
+        if state.status == RunStatus.BUDGET_EXHAUSTED:
+            return False
         breach = self.evaluate_budget(state)
         if breach is None:
             return True

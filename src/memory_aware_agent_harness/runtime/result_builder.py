@@ -92,4 +92,6 @@ class RunResultBuilder:
             error=eff_error,
             token_usage=tokens,
             failure_details=eff_failure,
+            step_history=tuple(self.state.step_history),
+            tool_results=tuple(self.state.tool_invocation_history),
         )

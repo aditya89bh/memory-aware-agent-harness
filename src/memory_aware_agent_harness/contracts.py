@@ -1823,12 +1823,24 @@ class RunResult(SerializableRecord):
     error: str | None = None
     token_usage: TokenUsage | None = None
     failure_details: FailureDetails | None = None
+    step_history: tuple[StepResult, ...] = field(default_factory=tuple)
+    tool_results: tuple[ToolResult, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "status",
             _coerce_enum(RunStatus, self.status, "RunResult.status"),
+        )
+        object.__setattr__(
+            self,
+            "step_history",
+            tuple(self.step_history if self.step_history is not None else ()),
+        )
+        object.__setattr__(
+            self,
+            "tool_results",
+            tuple(self.tool_results if self.tool_results is not None else ()),
         )
         if not str(self.run_id).strip():
             raise ValueError("RunResult.run_id must not be empty")
@@ -1897,6 +1909,14 @@ class RunResult(SerializableRecord):
             if isinstance(fd_raw, FailureDetails) or fd_raw is None
             else FailureDetails.from_dict(fd_raw)
         )
+        raw_steps = data.get("step_history", ())
+        step_history = tuple(
+            s if isinstance(s, StepResult) else StepResult.from_dict(s) for s in raw_steps
+        )
+        raw_tools = data.get("tool_results", ())
+        tool_results = tuple(
+            t if isinstance(t, ToolResult) else ToolResult.from_dict(t) for t in raw_tools
+        )
         return cls(
             run_id=RunId(str(data["run_id"])),
             namespace_id=NamespaceId(str(data["namespace_id"])),
@@ -1908,6 +1928,8 @@ class RunResult(SerializableRecord):
             error=data.get("error"),
             token_usage=token_usage,
             failure_details=failure_details,
+            step_history=step_history,
+            tool_results=tool_results,
         )
 
 

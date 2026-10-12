@@ -21,8 +21,10 @@ from memory_aware_agent_harness.contracts import (
     RunId,
     RunStatus,
     StepId,
+    StepResult,
     StepState,
     TokenUsage,
+    ToolResult,
 )
 from memory_aware_agent_harness.runtime.fsm import RunFSM, StepFSM
 
@@ -71,6 +73,9 @@ class LifecycleState:
         self.current_step_id: StepId | None = None
         self.current_step_fsm: StepFSM | None = None
         self.cumulative_tokens = TokenUsage.zero()
+        self.current_step_tokens = TokenUsage.zero()
+        self.step_history: list[StepResult] = []
+        self.tool_invocation_history: list[ToolResult] = []
 
         self.started_at: datetime = self.clock.now()
         self.completed_at: datetime | None = None
@@ -116,6 +121,7 @@ class LifecycleState:
             )
 
         self.step_count += 1
+        self.current_step_tokens = TokenUsage.zero()
         step_id_str = self.id_generator.generate_id(f"step_{self.run_id}_{self.step_count}")
         step_id = StepId(step_id_str)
         step_fsm = StepFSM(initial_state=StepState.NOT_STARTED, clock=self.clock)
@@ -124,9 +130,16 @@ class LifecycleState:
         self.current_step_fsm = step_fsm
         return step_id, step_fsm
 
+    def record_step_result(self, step_result: StepResult) -> None:
+        """Record completed step result into run history and aggregate tool results."""
+        self.step_history.append(step_result)
+        for tr in step_result.tool_results:
+            self.tool_invocation_history.append(tr)
+
     def record_tokens(self, usage: TokenUsage) -> TokenUsage:
         """Accumulate token consumption, ensuring monotonic non-negative addition."""
         self.cumulative_tokens = self.cumulative_tokens + usage
+        self.current_step_tokens = self.current_step_tokens + usage
         return self.cumulative_tokens
 
     def pause(self, reason: str | None = None) -> RunStatus:
@@ -138,13 +151,26 @@ class LifecycleState:
         return self.run_fsm.transition_to(RunStatus.RUNNING, reason=reason)
 
     def complete(self, reason: str | None = None) -> RunStatus:
-        """Mark run as completed successfully."""
+        """Mark run as completed successfully, ensuring budgets were not exceeded."""
+        exhausted, exc = self.is_budget_exhausted()
+        if exhausted and exc is not None:
+            self.failure_details = exc.to_failure_details(step_id=self.current_step_id)
+            return self.exhaust_budget(reason=exc.message)
         status = self.run_fsm.transition_to(RunStatus.COMPLETED, reason=reason)
         self.completed_at = self.clock.now()
         return status
 
     def exhaust_budget(self, reason: str | None = None) -> RunStatus:
         """Mark run as budget exhausted."""
+        if self.status == RunStatus.BUDGET_EXHAUSTED:
+            return self.status
+        if self.failure_details is None:
+            self.failure_details = FailureDetails(
+                error_type="BudgetExceededError",
+                message=reason or "Execution budget exceeded",
+                step_id=self.current_step_id,
+                error_code="BUDGET_EXCEEDED",
+            )
         status = self.run_fsm.transition_to(RunStatus.BUDGET_EXHAUSTED, reason=reason)
         self.completed_at = self.clock.now()
         return status

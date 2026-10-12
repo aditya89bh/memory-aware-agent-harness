@@ -19,6 +19,7 @@ from memory_aware_agent_harness.contracts import (
     TokenUsage,
     ToolCallContext,
     ToolCallRequest,
+    ToolCallStatus,
     ToolProtocol,
 )
 from memory_aware_agent_harness.doubles import DeterministicClock, DeterministicIdGenerator
@@ -205,11 +206,15 @@ def test_e2e_tool_failure_and_recovery() -> None:
     assert flaky.call_count == 2
     assert result.final_output == "Successfully recovered on retry."
 
-    # Verify first tool failed and second succeeded via event audit trail
+    # Verify first tool failed with outcome_unknown (P1-M2 mutating tool failure)
+    # and second succeeded via event audit trail
     tool_events = collector.events_of_type(RuntimeEventType.TOOL_COMPLETED)
     assert len(tool_events) == 2
-    assert tool_events[0].payload["status"] == "failed"
+    assert tool_events[0].payload["status"] == "outcome_unknown"
     assert tool_events[1].payload["status"] == "completed"
+    assert len(result.tool_results) == 2
+    assert result.tool_results[0].status == ToolCallStatus.OUTCOME_UNKNOWN
+    assert result.tool_results[1].status == ToolCallStatus.COMPLETED
 
 
 def test_e2e_multi_tool_single_step() -> None:

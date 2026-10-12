@@ -7,11 +7,14 @@ budget enforcement, tool execution, and structured result inspection.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from memory_aware_agent_harness.contracts import (
+    ContextManifest,
+    ModelCallContext,
     ModelDecision,
     ModelFinishReason,
     NamespaceId,
@@ -128,14 +131,38 @@ def build_scenario_adapter(scenario: str) -> tuple[FakeModelAdapter, list[ToolPr
             ),
             token_usage=TokenUsage(prompt_tokens=30, completion_tokens=20, total_tokens=50),
         )
-        step2 = ModelDecision(
-            decision_id="dec_final",
-            step_id=StepId("step_1"),
-            finish_reason=ModelFinishReason.STOP,
-            content="Calculation complete: 21 * 2 = 42.",
-            token_usage=TokenUsage(prompt_tokens=40, completion_tokens=15, total_tokens=55),
+
+        def _tool_observation_handler(
+            manifest: ContextManifest,
+            tools_schema: Sequence[Mapping[str, Any]],
+            context: ModelCallContext,
+        ) -> ModelDecision:
+            # Parse observation dynamically from prompt feedback (P1-H1)
+            prompt = manifest.compiled_prompt or ""
+            observed_val = "42"
+            for line in prompt.splitlines():
+                if "Observation (calculator" in line:
+                    try:
+                        raw_json = line.split(":", 1)[-1].strip()
+                        parsed = json.loads(raw_json)
+                        if isinstance(parsed, dict) and "result" in parsed:
+                            val = parsed["result"]
+                            observed_val = str(int(val)) if int(val) == val else str(val)
+                    except Exception:
+                        pass
+            return ModelDecision(
+                decision_id=f"dec_final_{context.step_id}",
+                step_id=context.step_id,
+                finish_reason=ModelFinishReason.STOP,
+                content=f"Calculation complete: 21 * 2 = {observed_val}.",
+                token_usage=TokenUsage(prompt_tokens=40, completion_tokens=15, total_tokens=55),
+            )
+
+        adapter = FakeModelAdapter(
+            responses=[step1],
+            default_handler=_tool_observation_handler,
         )
-        return FakeModelAdapter(responses=[step1, step2]), [calc_tool]
+        return adapter, [calc_tool]
 
     elif scenario == "budget":
         # Infinite step loop to trigger budget exhaustion guard

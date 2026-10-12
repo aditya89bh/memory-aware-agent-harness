@@ -6,21 +6,26 @@ model decision dispatching, 8-phase step lifecycle execution, and canonical resu
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Mapping, Sequence
+from datetime import timedelta
 from typing import Any
 
 from memory_aware_agent_harness.contracts import (
+    BudgetExceededError,
     CancellationToken,
     ClockPort,
     ContextItem,
     ContextManifest,
+    DeadlineExceededError,
     ExecutionCancelledError,
     FailureDetails,
     IdGeneratorPort,
     MemoryKind,
     MemoryStoreProtocol,
     ModelCallContext,
+    ModelDecision,
     ModelFinishReason,
     ModelPort,
     NamespaceId,
@@ -32,6 +37,7 @@ from memory_aware_agent_harness.contracts import (
     StepId,
     StepResult,
     StepState,
+    TokenUsage,
     ToolCallContext,
     ToolCallStatus,
     ToolInvocationId,
@@ -56,6 +62,45 @@ from memory_aware_agent_harness.runtime.state import (
     SystemIdGenerator,
 )
 from memory_aware_agent_harness.runtime.step_compiler import StepOutcomeCompiler
+
+
+def compile_execution_prompt(
+    task: str,
+    history: Sequence[StepResult],
+    max_history_steps: int = 10,
+) -> str:
+    """Compile task and bounded history of prior decisions and tool observations (P1-H1)."""
+    if not history:
+        return task
+
+    def _json_default(obj: Any) -> Any:
+        if isinstance(obj, Mapping):
+            return dict(obj)
+        return str(obj)
+
+    bounded_history = history[-max_history_steps:]
+    sections: list[str] = [f"Task: {task}", "", "--- Execution History ---"]
+    for step in bounded_history:
+        sections.append(f"[Step {step.step_number}]")
+        if step.decision.content:
+            sections.append(f"Model: {step.decision.content}")
+        if step.decision.tool_calls:
+            for tc in step.decision.tool_calls:
+                args_json = json.dumps(tc.arguments, sort_keys=True, default=_json_default)
+                sections.append(f"Action: Call {tc.tool_name} with arguments {args_json}")
+        if step.tool_results:
+            for tr in step.tool_results:
+                obs_val = tr.result if tr.result is not None else tr.error
+                if isinstance(obs_val, (dict, list, Mapping)):
+                    obs_str = json.dumps(obs_val, sort_keys=True, default=_json_default)
+                else:
+                    obs_str = str(obs_val)
+                sections.append(f"Observation ({tr.tool_name}, {tr.status.value}): {obs_str}")
+        sections.append("")
+
+    sections.append(f"--- Current Step {len(history) + 1} ---")
+    sections.append("Continue executing the task based on the observations above.")
+    return "\n".join(sections)
 
 
 class AgentRuntime:
@@ -192,8 +237,28 @@ class AgentRuntime:
                     step_fsm=step_fsm,
                     task=task,
                     step_compiler=step_compiler,
+                    budget_guard=budget_guard,
                     cancellation_listener=cancellation_listener,
                 )
+            except BudgetExceededError as exc:
+                if not step_fsm.is_terminal:
+                    step_fsm.transition_to(StepState.FAILED, reason=str(exc))
+                if not state.is_terminal:
+                    state.failure_details = exc.to_failure_details(step_id=step_id)
+                    state.exhaust_budget(reason=str(exc))
+                break
+            except DeadlineExceededError as exc:
+                if not step_fsm.is_terminal:
+                    step_fsm.transition_to(StepState.FAILED, reason=str(exc))
+                if not state.is_terminal:
+                    state.failure_details = FailureDetails(
+                        error_type="DeadlineExceededError",
+                        message=str(exc),
+                        step_id=step_id,
+                        error_code="DEADLINE_EXCEEDED",
+                    )
+                    state.exhaust_budget(reason=str(exc))
+                break
             except ExecutionCancelledError as exc:
                 dispatcher = AbortDispatcher(state)
                 dispatcher.dispatch_cancellation(reason=str(exc))
@@ -214,8 +279,17 @@ class AgentRuntime:
                 state.fail(failure, reason=str(exc))
                 break
 
+            # Record step result into execution history
+            state.record_step_result(step_result)
+
+            # Check budget exhaustion after step completion
+            if not budget_guard.enforce(state):
+                break
+
             # Handle model decision outcome
             if step_result.decision.finish_reason == ModelFinishReason.STOP:
+                if not budget_guard.enforce(state):
+                    break
                 final_output = step_result.decision.content
                 state.complete(reason="Task completed by model")
                 break
@@ -247,10 +321,46 @@ class AgentRuntime:
         step_fsm: StepFSM,
         task: str,
         step_compiler: StepOutcomeCompiler,
+        budget_guard: BudgetGuard,
         cancellation_listener: CancellationListener,
     ) -> StepResult:
-        """Execute the full 8-phase step lifecycle sequence."""
-        # --- Phase 1: RETRIEVAL ---
+        """Execute the full 8-phase step lifecycle sequence via modular phase handlers."""
+        # Phase 1: Context retrieval
+        included_items = self._phase_1_retrieve(
+            state, step_id, step_fsm, task, cancellation_listener
+        )
+
+        # Phase 2: Compile context manifest with bounded history
+        manifest = self._phase_2_compile_context(
+            state, step_id, step_fsm, task, included_items, cancellation_listener
+        )
+
+        # Phase 3: Model decision dispatch
+        decision = self._phase_3_decide(
+            state, step_id, step_fsm, manifest, budget_guard, cancellation_listener
+        )
+
+        # Phase 4: Tool dispatch
+        tool_results = self._phase_4_dispatch_tools(
+            state, step_id, step_fsm, decision, budget_guard, cancellation_listener
+        )
+
+        # Phases 5-7: Memory extraction, commit, and checkpoint lifecycle stubs
+        self._phase_5_to_7_lifecycle_stubs(state, step_id, step_fsm, cancellation_listener)
+
+        # Phase 8: Outcome compilation
+        return self._phase_8_compile_outcome(
+            state, step_id, decision, tool_results, step_compiler
+        )
+
+    def _phase_1_retrieve(
+        self,
+        state: LifecycleState,
+        step_id: StepId,
+        step_fsm: StepFSM,
+        task: str,
+        cancellation_listener: CancellationListener,
+    ) -> list[ContextItem]:
         step_fsm.transition_to(StepState.RETRIEVING)
         self.event_emitter.emit(
             RuntimeEventType.PHASE_TRANSITION,
@@ -285,8 +395,17 @@ class AgentRuntime:
                         token_cost=cost,
                     )
                 )
+        return included_items
 
-        # --- Phase 2: COMPILE CONTEXT ---
+    def _phase_2_compile_context(
+        self,
+        state: LifecycleState,
+        step_id: StepId,
+        step_fsm: StepFSM,
+        task: str,
+        included_items: list[ContextItem],
+        cancellation_listener: CancellationListener,
+    ) -> ContextManifest:
         step_fsm.transition_to(StepState.COMPILING_CONTEXT)
         self.event_emitter.emit(
             RuntimeEventType.PHASE_TRANSITION,
@@ -296,17 +415,30 @@ class AgentRuntime:
         )
         cancellation_listener.check()
 
-        manifest = ContextManifest(
+        compiled_prompt = compile_execution_prompt(
+            task, state.step_history, max_history_steps=10
+        )
+        prompt_token_est = len(compiled_prompt.split())
+
+        return ContextManifest(
             manifest_id=self.id_generator.generate_id(f"manifest_{step_id}"),
             step_id=step_id,
             included_items=tuple(included_items),
             excluded_item_ids={},
-            total_tokens=sum(item.token_cost for item in included_items) + len(task.split()),
+            total_tokens=sum(item.token_cost for item in included_items) + prompt_token_est,
             budget_limit=state.budgets.max_tokens,
-            compiled_prompt=task,
+            compiled_prompt=compiled_prompt,
         )
 
-        # --- Phase 3: DECIDE ---
+    def _phase_3_decide(
+        self,
+        state: LifecycleState,
+        step_id: StepId,
+        step_fsm: StepFSM,
+        manifest: ContextManifest,
+        budget_guard: BudgetGuard,
+        cancellation_listener: CancellationListener,
+    ) -> ModelDecision:
         step_fsm.transition_to(StepState.DECIDING)
         self.event_emitter.emit(
             RuntimeEventType.PHASE_TRANSITION,
@@ -316,6 +448,15 @@ class AgentRuntime:
         )
         cancellation_listener.check()
 
+        deadline = state.started_at + timedelta(seconds=state.budgets.max_time_seconds)
+        now = state.clock.now()
+        if now >= deadline:
+            state.exhaust_budget(reason="Time budget exceeded before model invocation")
+            raise DeadlineExceededError(
+                f"Deadline exceeded for run '{state.run_id}' step '{step_id}'",
+                deadline=deadline,
+            )
+
         model_ctx = ModelCallContext(
             run_id=state.run_id,
             step_id=step_id,
@@ -323,6 +464,7 @@ class AgentRuntime:
             budget_remaining_tokens=state.budgets.remaining_tokens(
                 state.cumulative_tokens.total_tokens
             ),
+            deadline=deadline,
             cancellation_token=state.cancellation_token,
         )
 
@@ -345,116 +487,177 @@ class AgentRuntime:
             },
         )
 
-        tool_results: list[ToolResult] = []
+        # Record token usage immediately upon model return (P1-M1)
+        eff_tokens = decision.token_usage
+        if eff_tokens is None:
+            if decision.tokens_used > 0:
+                eff_tokens = TokenUsage(
+                    prompt_tokens=0,
+                    completion_tokens=decision.tokens_used,
+                    total_tokens=decision.tokens_used,
+                )
+            else:
+                eff_tokens = TokenUsage.zero()
+        state.record_tokens(eff_tokens)
 
-        # --- Phase 4: DISPATCH TOOL (if requested) ---
-        if decision.finish_reason == ModelFinishReason.TOOL_CALL or len(decision.tool_calls) > 0:
-            step_fsm.transition_to(StepState.DISPATCHING_TOOL)
+        # Enforce budget immediately after model return (P1-H2)
+        if not budget_guard.enforce(state):
+            breach = budget_guard.evaluate_budget(state)
+            raise breach or BudgetExceededError(
+                f"Budget exceeded after model step: {state.cumulative_tokens.total_tokens} tokens",
+                budget_type="tokens",
+                limit=state.budgets.max_tokens,
+                observed=state.cumulative_tokens.total_tokens,
+            )
+
+        return decision
+
+    def _phase_4_dispatch_tools(
+        self,
+        state: LifecycleState,
+        step_id: StepId,
+        step_fsm: StepFSM,
+        decision: ModelDecision,
+        budget_guard: BudgetGuard,
+        cancellation_listener: CancellationListener,
+    ) -> list[ToolResult]:
+        if decision.finish_reason != ModelFinishReason.TOOL_CALL and len(decision.tool_calls) == 0:
+            return []
+
+        step_fsm.transition_to(StepState.DISPATCHING_TOOL)
+        self.event_emitter.emit(
+            RuntimeEventType.PHASE_TRANSITION,
+            run_id=state.run_id,
+            step_id=step_id,
+            phase=StepState.DISPATCHING_TOOL,
+        )
+        cancellation_listener.check()
+
+        tool_results: list[ToolResult] = []
+        deadline = state.started_at + timedelta(seconds=state.budgets.max_time_seconds)
+
+        for call in decision.tool_calls:
+            cancellation_listener.check()
+            if not budget_guard.enforce(state):
+                break
+
             self.event_emitter.emit(
-                RuntimeEventType.PHASE_TRANSITION,
+                RuntimeEventType.TOOL_INVOKED,
                 run_id=state.run_id,
                 step_id=step_id,
                 phase=StepState.DISPATCHING_TOOL,
+                payload={"tool_name": call.tool_name, "call_id": call.call_id},
             )
-            cancellation_listener.check()
+            inv_id = ToolInvocationId(self.id_generator.generate_id(f"inv_{call.tool_name}"))
+            tool = self.tools_by_name.get(call.tool_name)
 
-            for call in decision.tool_calls:
-                cancellation_listener.check()
-                self.event_emitter.emit(
-                    RuntimeEventType.TOOL_INVOKED,
-                    run_id=state.run_id,
+            if tool is None:
+                fail_details = FailureDetails(
+                    error_type="ToolNotFoundError",
+                    message=f"Tool '{call.tool_name}' is not registered with runtime",
                     step_id=step_id,
-                    phase=StepState.DISPATCHING_TOOL,
-                    payload={"tool_name": call.tool_name, "call_id": call.call_id},
+                    error_code="TOOL_NOT_FOUND",
                 )
-                inv_id = ToolInvocationId(self.id_generator.generate_id(f"inv_{call.tool_name}"))
-                tool = self.tools_by_name.get(call.tool_name)
-
-                if tool is None:
-                    fail_details = FailureDetails(
-                        error_type="ToolNotFoundError",
-                        message=f"Tool '{call.tool_name}' is not registered with runtime",
-                        step_id=step_id,
-                        error_code="TOOL_NOT_FOUND",
+                tool_results.append(
+                    ToolResult(
+                        invocation_id=inv_id,
+                        tool_name=call.tool_name,
+                        status=ToolCallStatus.FAILED,
+                        side_effect=SideEffectType.READ_ONLY,
+                        idempotency_key=f"idemp_{inv_id}",
+                        error=f"Tool '{call.tool_name}' not found",
+                        failure_details=fail_details,
                     )
-                    tool_results.append(
-                        ToolResult(
-                            invocation_id=inv_id,
-                            tool_name=call.tool_name,
-                            status=ToolCallStatus.FAILED,
-                            side_effect=SideEffectType.READ_ONLY,
-                            idempotency_key=f"idemp_{inv_id}",
-                            error=f"Tool '{call.tool_name}' not found",
-                            failure_details=fail_details,
-                        )
-                    )
-                    self.event_emitter.emit(
-                        RuntimeEventType.TOOL_COMPLETED,
-                        run_id=state.run_id,
-                        step_id=step_id,
-                        phase=StepState.DISPATCHING_TOOL,
-                        payload={"tool_name": call.tool_name, "status": str(ToolCallStatus.FAILED)},
-                    )
-                    continue
-
-                tool_ctx = ToolCallContext(
-                    run_id=state.run_id,
-                    step_id=step_id,
-                    namespace_id=state.namespace_id,
-                    invocation_id=inv_id,
-                    idempotency_key=f"idemp_{inv_id}",
-                    cancellation_token=state.cancellation_token,
                 )
-
-                t_start = time.perf_counter()
-                try:
-                    raw_res = tool.execute(call.arguments, tool_ctx)
-                    t_elapsed_ms = (time.perf_counter() - t_start) * 1000.0
-                    tool_results.append(
-                        ToolResult(
-                            invocation_id=inv_id,
-                            tool_name=call.tool_name,
-                            status=ToolCallStatus.COMPLETED,
-                            side_effect=tool.side_effect,
-                            idempotency_key=f"idemp_{inv_id}",
-                            result=raw_res,
-                            execution_time_ms=t_elapsed_ms,
-                        )
-                    )
-                except (ExecutionCancelledError, PolicyViolationError):
-                    raise
-                except Exception as exc:
-                    t_elapsed_ms = (time.perf_counter() - t_start) * 1000.0
-                    fail_details = FailureDetails(
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                        step_id=step_id,
-                        error_code="TOOL_EXECUTION_ERROR",
-                    )
-                    tool_results.append(
-                        ToolResult(
-                            invocation_id=inv_id,
-                            tool_name=call.tool_name,
-                            status=ToolCallStatus.FAILED,
-                            side_effect=tool.side_effect,
-                            idempotency_key=f"idemp_{inv_id}",
-                            error=str(exc),
-                            failure_details=fail_details,
-                            execution_time_ms=t_elapsed_ms,
-                        )
-                    )
                 self.event_emitter.emit(
                     RuntimeEventType.TOOL_COMPLETED,
                     run_id=state.run_id,
                     step_id=step_id,
                     phase=StepState.DISPATCHING_TOOL,
-                    payload={
-                        "tool_name": call.tool_name,
-                        "status": str(tool_results[-1].status),
-                    },
+                    payload={"tool_name": call.tool_name, "status": str(ToolCallStatus.FAILED)},
+                )
+                continue
+
+            tool_ctx = ToolCallContext(
+                run_id=state.run_id,
+                step_id=step_id,
+                namespace_id=state.namespace_id,
+                invocation_id=inv_id,
+                idempotency_key=f"idemp_{inv_id}",
+                deadline=deadline,
+                cancellation_token=state.cancellation_token,
+            )
+
+            t_start = time.perf_counter()
+            try:
+                raw_res = tool.execute(call.arguments, tool_ctx)
+                t_elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                tool_results.append(
+                    ToolResult(
+                        invocation_id=inv_id,
+                        tool_name=call.tool_name,
+                        status=ToolCallStatus.COMPLETED,
+                        side_effect=tool.side_effect,
+                        idempotency_key=f"idemp_{inv_id}",
+                        result=raw_res,
+                        execution_time_ms=t_elapsed_ms,
+                    )
+                )
+            except (ExecutionCancelledError, PolicyViolationError):
+                raise
+            except Exception as exc:
+                t_elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                is_mutating = tool.side_effect in (
+                    SideEffectType.IDEMPOTENT_WRITE,
+                    SideEffectType.NON_IDEMPOTENT_WRITE,
+                )
+                status = ToolCallStatus.OUTCOME_UNKNOWN if is_mutating else ToolCallStatus.FAILED
+                error_code = "SIDE_EFFECT_UNCERTAIN" if is_mutating else "TOOL_EXECUTION_ERROR"
+                fail_details = FailureDetails(
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                    step_id=step_id,
+                    error_code=error_code,
+                )
+                tool_results.append(
+                    ToolResult(
+                        invocation_id=inv_id,
+                        tool_name=call.tool_name,
+                        status=status,
+                        side_effect=tool.side_effect,
+                        idempotency_key=f"idemp_{inv_id}",
+                        error=str(exc),
+                        failure_details=fail_details,
+                        execution_time_ms=t_elapsed_ms,
+                    )
                 )
 
-        # --- Phase 5: EXTRACT MEMORIES ---
+            self.event_emitter.emit(
+                RuntimeEventType.TOOL_COMPLETED,
+                run_id=state.run_id,
+                step_id=step_id,
+                phase=StepState.DISPATCHING_TOOL,
+                payload={
+                    "tool_name": call.tool_name,
+                    "status": str(tool_results[-1].status),
+                },
+            )
+
+            # Enforce budget after each tool invocation
+            if not budget_guard.enforce(state):
+                break
+
+        return tool_results
+
+    def _phase_5_to_7_lifecycle_stubs(
+        self,
+        state: LifecycleState,
+        step_id: StepId,
+        step_fsm: StepFSM,
+        cancellation_listener: CancellationListener,
+    ) -> None:
+        """Execute extension point stubs for memory extraction, commit, and checkpointing."""
+        # Phase 5: EXTRACT MEMORIES
         step_fsm.transition_to(StepState.EXTRACTING_MEMORIES)
         self.event_emitter.emit(
             RuntimeEventType.PHASE_TRANSITION,
@@ -464,7 +667,7 @@ class AgentRuntime:
         )
         cancellation_listener.check()
 
-        # --- Phase 6: COMMIT MEMORIES ---
+        # Phase 6: COMMIT MEMORIES
         step_fsm.transition_to(StepState.COMMITTING_MEMORIES)
         self.event_emitter.emit(
             RuntimeEventType.PHASE_TRANSITION,
@@ -474,7 +677,7 @@ class AgentRuntime:
         )
         cancellation_listener.check()
 
-        # --- Phase 7: CHECKPOINTING ---
+        # Phase 7: CHECKPOINTING
         step_fsm.transition_to(StepState.CHECKPOINTING)
         self.event_emitter.emit(
             RuntimeEventType.PHASE_TRANSITION,
@@ -484,7 +687,14 @@ class AgentRuntime:
         )
         cancellation_listener.check()
 
-        # --- Phase 8: COMPILE STEP OUTCOME & COMPLETED ---
+    def _phase_8_compile_outcome(
+        self,
+        state: LifecycleState,
+        step_id: StepId,
+        decision: ModelDecision,
+        tool_results: list[ToolResult],
+        step_compiler: StepOutcomeCompiler,
+    ) -> StepResult:
         step_result = step_compiler.compile_step(
             decision=decision,
             tool_results=tool_results,
