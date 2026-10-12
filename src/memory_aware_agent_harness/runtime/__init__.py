@@ -18,6 +18,7 @@ from memory_aware_agent_harness.runtime.recovery import (
     OrphanedRunRecoveryHandler,
 )
 from memory_aware_agent_harness.runtime.result_builder import RunResultBuilder
+from memory_aware_agent_harness.runtime.runner import AgentRuntime
 from memory_aware_agent_harness.runtime.state import (
     LifecycleState,
     SystemClock,
@@ -27,6 +28,7 @@ from memory_aware_agent_harness.runtime.step_compiler import StepOutcomeCompiler
 
 __all__ = [
     "AbortDispatcher",
+    "AgentRuntime",
     "BudgetGuard",
     "CancellationListener",
     "FakeModelAdapter",
