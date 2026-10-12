@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from types import MappingProxyType
+import copy
+import dataclasses
+import pickle
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -12,6 +14,7 @@ from memory_aware_agent_harness.contracts import (
     CandidateStatus,
     ContextItem,
     ContextManifest,
+    FrozenDict,
     MemoryCandidate,
     MemoryId,
     MemoryKind,
@@ -135,7 +138,7 @@ def test_tool_call_request_serialization_roundtrip() -> None:
     req = ToolCallRequest(
         call_id="call_99",
         tool_name="database_query",
-        arguments=MappingProxyType({"query": "SELECT 1", "limit": 10}),
+        arguments=FrozenDict({"query": "SELECT 1", "limit": 10}),
     )
     d = req.to_dict()
     assert d == {
@@ -299,3 +302,346 @@ def test_all_contract_records_json_roundtrip() -> None:
         trace_id="tr_1",
     )
     assert RunResult.from_json(rr.to_json()) == rr
+
+
+def test_default_memory_record_supports_hash() -> None:
+    """1. Default MemoryRecord supports hash() and can be used in sets and dict keys."""
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_hash_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="Hash support test",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=now,
+        updated_at=now,
+    )
+    rec_hash = hash(rec)
+    assert isinstance(rec_hash, int)
+    record_set = {rec}
+    assert rec in record_set
+    record_map = {rec: "verified"}
+    assert record_map[rec] == "verified"
+
+
+def test_default_memory_record_supports_deepcopy() -> None:
+    """2. Default MemoryRecord supports copy.deepcopy()."""
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_copy_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="Deepcopy support test",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=now,
+        updated_at=now,
+        metadata={"nested": {"flag": True, "count": 5}},
+    )
+    copied = copy.deepcopy(rec)
+    assert copied == rec
+    assert copied is not rec
+    assert isinstance(copied.metadata, FrozenDict)
+    assert hash(copied) == hash(rec)
+
+
+def test_default_memory_record_supports_pickle() -> None:
+    """3. Default MemoryRecord supports pickle.dumps()/loads()."""
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_pickle_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="Pickle support test",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=now,
+        updated_at=now,
+        metadata={"tags": ["a", "b"], "config": {"active": True}},
+    )
+    pickled = pickle.dumps(rec)
+    unpickled = pickle.loads(pickled)
+    assert unpickled == rec
+    assert isinstance(unpickled.metadata, FrozenDict)
+    assert hash(unpickled) == hash(rec)
+
+
+def test_default_memory_record_supports_dataclasses_asdict() -> None:
+    """4. Default MemoryRecord supports dataclasses.asdict()."""
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_asdict_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="asdict support test",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=now,
+        updated_at=now,
+        metadata={"category": "test"},
+    )
+    res = dataclasses.asdict(rec)
+    assert isinstance(res, dict)
+    assert res["id"] == "mem_asdict_01"
+    assert isinstance(res["metadata"], dict)
+    assert res["metadata"] == {"category": "test"}
+
+
+def test_caller_mutation_cannot_change_nested_record_state_acceptance() -> None:
+    """5. Caller mutation cannot change nested record state."""
+    raw_meta: dict[str, Any] = {"nested": {"k": "v"}, "items": [1, 2]}
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_mut_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="Mutation defense test",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=now,
+        updated_at=now,
+        metadata=raw_meta,
+    )
+    raw_meta["nested"]["k"] = "corrupted"
+    raw_meta["items"].append(3)
+    assert rec.metadata["nested"]["k"] == "v"
+    assert rec.metadata["items"] == (1, 2)
+
+    assert isinstance(rec.metadata, FrozenDict)
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        _attempt_setitem(rec.metadata, "new_key", "value")
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        _attempt_setitem(rec.metadata["nested"], "k", "hacked")
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        rec.metadata.clear()
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        rec.metadata.pop("nested")
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        rec.metadata.update({"other": 1})
+
+
+def test_canonical_json_identical_for_equivalent_utc_instants() -> None:
+    """6. Canonical JSON produces identical output for equivalent UTC instants."""
+    instant_utc = datetime(2026, 10, 12, 12, 0, 0, tzinfo=UTC)
+    instant_est = datetime(2026, 10, 12, 7, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
+    instant_ist = datetime(2026, 10, 12, 17, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+
+    rec_utc = MemoryRecord(
+        id=MemoryId("mem_eq_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="UTC equivalence test",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=instant_utc,
+        updated_at=instant_utc,
+    )
+    rec_est = MemoryRecord(
+        id=MemoryId("mem_eq_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="UTC equivalence test",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=instant_est,
+        updated_at=instant_est,
+    )
+    rec_ist = MemoryRecord(
+        id=MemoryId("mem_eq_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="UTC equivalence test",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=instant_ist,
+        updated_at=instant_ist,
+    )
+
+    assert rec_utc.to_json() == rec_est.to_json() == rec_ist.to_json()
+
+
+def test_nan_and_infinity_rejected() -> None:
+    """7. NaN and Infinity are rejected."""
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+
+    with pytest.raises(ValueError, match="confidence must be finite"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=float("nan"),
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+        )
+    with pytest.raises(ValueError, match="confidence must be finite"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=float("inf"),
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+        )
+    with pytest.raises(ValueError, match="salience must be finite"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=float("nan"),
+            created_at=now,
+            updated_at=now,
+        )
+
+    with pytest.raises(ValueError, match="Float value must be finite"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"nan_val": float("nan")},
+        )
+    with pytest.raises(ValueError, match="Float value must be finite"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"inf_val": float("inf")},
+        )
+
+    with pytest.raises(ValueError, match="rank_score must be finite"):
+        ContextItem(
+            memory_id=MemoryId("m"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            rank_score=float("nan"),
+            provenance_id="p",
+            token_cost=10,
+        )
+
+    with pytest.raises(ValueError, match="execution_time_ms must be finite"):
+        ToolResult(
+            invocation_id=ToolInvocationId("inv"),
+            tool_name="tool",
+            status=ToolCallStatus.COMPLETED,
+            side_effect=SideEffectType.READ_ONLY,
+            idempotency_key="k",
+            execution_time_ms=float("nan"),
+        )
+
+
+def test_unsupported_metadata_values_rejected_instead_of_silently_converted() -> None:
+    """8. Unsupported metadata values are rejected instead of silently converted."""
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+
+    with pytest.raises(TypeError, match="Unsupported metadata value"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"func": lambda: None},
+        )
+
+    with pytest.raises(TypeError, match="Unsupported metadata value"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"raw_obj": object()},
+        )
+
+    with pytest.raises(TypeError, match="Mapping keys must be strings"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={123: "non_string_key"},  # type: ignore[dict-item]
+        )
+
+    with pytest.raises(ValueError, match="Datetime must be timezone-aware"):
+        MemoryRecord(
+            id=MemoryId("m"),
+            namespace_id=NamespaceId("ns"),
+            kind=MemoryKind.SEMANTIC,
+            content="text",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            metadata={"naive": datetime(2026, 1, 1, 12, 0, 0)},
+        )
+
+
+def test_to_dict_from_dict_and_to_json_from_json_roundtrip_accurately() -> None:
+    """9. to_dict/from_dict and to_json/from_json round-trip accurately across structures."""
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_roundtrip"),
+        namespace_id=NamespaceId("ns_roundtrip"),
+        kind=MemoryKind.SEMANTIC,
+        content="Roundtrip accuracy verification",
+        state=MemoryState.ACTIVE,
+        confidence=0.88,
+        salience=0.77,
+        created_at=now,
+        updated_at=now,
+        expires_at=now,
+        source_references=("ref_1", "ref_2"),
+        metadata={"int": 1, "float": 2.5, "bool": True, "nested": {"str": "hello"}},
+        access_count=3,
+        version=2,
+    )
+    d = rec.to_dict()
+    from_d = MemoryRecord.from_dict(d)
+    assert from_d == rec
+
+    j = rec.to_json()
+    from_j = MemoryRecord.from_json(j)
+    assert from_j == rec

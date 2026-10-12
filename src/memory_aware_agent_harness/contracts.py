@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum, StrEnum
-from types import MappingProxyType
 from typing import (
     Any,
     NewType,
@@ -27,22 +28,110 @@ EventId = NewType("EventId", str)
 ToolInvocationId = NewType("ToolInvocationId", str)
 
 
+# --- Immutable, Hashable Data Structures ---
+class FrozenDict(dict[Any, Any]):
+    """Immutable, hashable dictionary that is safe for pickling, deepcopy, and serialization."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._hash: int | None = None
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        raise TypeError("FrozenDict is immutable")
+
+    def __delitem__(self, key: Any) -> None:
+        raise TypeError("FrozenDict is immutable")
+
+    def clear(self) -> None:
+        raise TypeError("FrozenDict is immutable")
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError("FrozenDict is immutable")
+
+    def pop(self, *args: Any, **kwargs: Any) -> Any:
+        raise TypeError("FrozenDict is immutable")
+
+    def popitem(self) -> tuple[Any, Any]:
+        raise TypeError("FrozenDict is immutable")
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        raise TypeError("FrozenDict is immutable")
+
+    def __ior__(self, other: Any) -> Self:
+        raise TypeError("FrozenDict is immutable")
+
+    def __or__(self, other: Any) -> FrozenDict:
+        return FrozenDict(super().__or__(dict(other)))
+
+    def __ror__(self, other: Any) -> FrozenDict:
+        return FrozenDict(super().__ror__(dict(other)))
+
+    def __hash__(self) -> int:  # type: ignore[override]
+        if self._hash is None:
+            sorted_items = sorted(self.items(), key=lambda kv: (str(type(kv[0])), str(kv[0])))
+            self._hash = hash(tuple(sorted_items))
+        return self._hash
+
+    def __copy__(self) -> Self:
+        return self
+
+    def __deepcopy__(self, memo: Any) -> Self:
+        return self.__class__(
+            {copy.deepcopy(k, memo): copy.deepcopy(v, memo) for k, v in self.items()}
+        )
+
+    def __reduce__(self) -> Any:
+        return (self.__class__, (dict(self),))
+
+    def __repr__(self) -> str:
+        return f"FrozenDict({super().__repr__()})"
+
+
 # --- Normalization and Serialization Helpers ---
 def _freeze(val: Any) -> Any:
-    """Recursively freeze mutable mappings, sequences, and sets into immutable variants."""
+    """Recursively validate and freeze mutable objects into immutable, hashable variants."""
+    if val is None or isinstance(val, (str, bool)):
+        return val
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            raise ValueError(f"Float value must be finite, got {val}")
+        return val
+    if isinstance(val, datetime):
+        if val.tzinfo is None:
+            raise ValueError("Datetime must be timezone-aware (tzinfo is required)")
+        return val
+    if isinstance(val, (StrEnum, Enum)):
+        return val
+    if isinstance(val, SerializableRecord):
+        return val
     if isinstance(val, Mapping):
-        return MappingProxyType({k: _freeze(v) for k, v in val.items()})
+        frozen_data: dict[Any, Any] = {}
+        for k, v in val.items():
+            if not isinstance(k, (str, Enum, StrEnum)):
+                raise TypeError(f"Mapping keys must be strings or Enums, got {type(k).__name__}")
+            frozen_data[k] = _freeze(v)
+        return FrozenDict(frozen_data)
     if isinstance(val, (list, tuple)):
         return tuple(_freeze(item) for item in val)
     if isinstance(val, (set, frozenset)):
         return frozenset(_freeze(item) for item in val)
-    return val
+    raise TypeError(f"Unsupported metadata value of type {type(val).__name__}: {val!r}")
 
 
 def _serialize_value(val: Any) -> Any:
     """Recursively serialize complex types into JSON-compatible primitives."""
+    if val is None or isinstance(val, (str, bool, int)):
+        return val
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            raise ValueError(f"Float value must be finite, got {val}")
+        return val
     if isinstance(val, datetime):
-        return val.isoformat()
+        if val.tzinfo is None:
+            raise ValueError("Datetime must be timezone-aware (tzinfo is required)")
+        return val.astimezone(UTC).isoformat()
     if isinstance(val, (StrEnum, Enum)):
         return val.value
     if hasattr(val, "to_dict") and callable(val.to_dict):
@@ -53,7 +142,7 @@ def _serialize_value(val: Any) -> Any:
         return [_serialize_value(item) for item in val]
     if isinstance(val, (set, frozenset)):
         return sorted([_serialize_value(item) for item in val])
-    return val
+    raise TypeError(f"Unsupported serializable value of type {type(val).__name__}")
 
 
 def _parse_dt(val: str | datetime) -> datetime:
@@ -83,7 +172,13 @@ class SerializableRecord:
 
     def to_json(self) -> str:
         """Serialize record to canonical JSON string with sorted keys and compact separators."""
-        return json.dumps(self.to_dict(), indent=None, separators=(",", ":"), sort_keys=True)
+        return json.dumps(
+            self.to_dict(),
+            indent=None,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
@@ -189,7 +284,7 @@ class ModelFinishReason(StrEnum):
 
 
 # --- FSM Transition Matrices ---
-LEGAL_RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = MappingProxyType(
+LEGAL_RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = FrozenDict(
     {
         RunStatus.INITIALIZED: frozenset(
             {RunStatus.RUNNING, RunStatus.CANCELLED, RunStatus.FAILED}
@@ -216,7 +311,7 @@ LEGAL_RUN_TRANSITIONS: Mapping[RunStatus, frozenset[RunStatus]] = MappingProxyTy
     }
 )
 
-LEGAL_STEP_TRANSITIONS: Mapping[StepState, frozenset[StepState]] = MappingProxyType(
+LEGAL_STEP_TRANSITIONS: Mapping[StepState, frozenset[StepState]] = FrozenDict(
     {
         StepState.NOT_STARTED: frozenset(
             {StepState.RETRIEVING, StepState.FAILED, StepState.ABORTED}
@@ -275,6 +370,10 @@ class RunBudgets(SerializableRecord):
             raise ValueError(f"RunBudgets.max_steps must be > 0, got {self.max_steps}")
         if self.max_tokens <= 0:
             raise ValueError(f"RunBudgets.max_tokens must be > 0, got {self.max_tokens}")
+        if math.isnan(self.max_time_seconds) or math.isinf(self.max_time_seconds):
+            raise ValueError(
+                f"RunBudgets.max_time_seconds must be finite, got {self.max_time_seconds}"
+            )
         if self.max_time_seconds <= 0.0:
             raise ValueError(
                 f"RunBudgets.max_time_seconds must be > 0.0, got {self.max_time_seconds}"
@@ -370,6 +469,10 @@ class ToolCallContext(SerializableRecord):
             raise ValueError("ToolCallContext.invocation_id must not be empty")
         if not self.idempotency_key.strip():
             raise ValueError("ToolCallContext.idempotency_key must not be empty")
+        if math.isnan(self.timeout_seconds) or math.isinf(self.timeout_seconds):
+            raise ValueError(
+                f"ToolCallContext.timeout_seconds must be finite, got {self.timeout_seconds}"
+            )
         if self.timeout_seconds <= 0.0:
             raise ValueError(
                 f"ToolCallContext.timeout_seconds must be > 0.0, got {self.timeout_seconds}"
@@ -421,7 +524,7 @@ class ToolCallRequest(SerializableRecord):
 
     call_id: str
     tool_name: str
-    arguments: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    arguments: Mapping[str, Any] = field(default_factory=FrozenDict)
 
     def __post_init__(self) -> None:
         args = self.arguments if self.arguments is not None else {}
@@ -506,6 +609,10 @@ class ToolResult(SerializableRecord):
             raise ValueError("ToolResult.tool_name must not be empty")
         if not self.idempotency_key.strip():
             raise ValueError("ToolResult.idempotency_key must not be empty")
+        if math.isnan(self.execution_time_ms) or math.isinf(self.execution_time_ms):
+            raise ValueError(
+                f"ToolResult.execution_time_ms must be finite, got {self.execution_time_ms}"
+            )
         if self.execution_time_ms < 0.0:
             raise ValueError(
                 f"ToolResult.execution_time_ms must be >= 0.0, got {self.execution_time_ms}"
@@ -540,7 +647,7 @@ class MemoryRecord(SerializableRecord):
     updated_at: datetime
     expires_at: datetime | None = None
     source_references: tuple[str, ...] = field(default_factory=tuple)
-    metadata: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    metadata: Mapping[str, Any] = field(default_factory=FrozenDict)
     access_count: int = 0
     version: int = 1
 
@@ -556,10 +663,14 @@ class MemoryRecord(SerializableRecord):
             raise ValueError("MemoryRecord.namespace_id must not be empty")
         if not self.content.strip():
             raise ValueError("MemoryRecord.content must not be empty")
+        if math.isnan(self.confidence) or math.isinf(self.confidence):
+            raise ValueError(f"MemoryRecord.confidence must be finite, got {self.confidence}")
         if not (0.0 <= self.confidence <= 1.0):
             raise ValueError(
                 f"MemoryRecord.confidence must be between 0.0 and 1.0, got {self.confidence}"
             )
+        if math.isnan(self.salience) or math.isinf(self.salience):
+            raise ValueError(f"MemoryRecord.salience must be finite, got {self.salience}")
         if not (0.0 <= self.salience <= 1.0):
             raise ValueError(
                 f"MemoryRecord.salience must be between 0.0 and 1.0, got {self.salience}"
@@ -619,6 +730,10 @@ class MemoryCandidate(SerializableRecord):
             raise ValueError("MemoryCandidate.content must not be empty")
         if not str(self.source_step_id).strip():
             raise ValueError("MemoryCandidate.source_step_id must not be empty")
+        if math.isnan(self.proposed_salience) or math.isinf(self.proposed_salience):
+            raise ValueError(
+                f"MemoryCandidate.proposed_salience must be finite, got {self.proposed_salience}"
+            )
         if not (0.0 <= self.proposed_salience <= 1.0):
             raise ValueError(
                 "MemoryCandidate.proposed_salience must be between 0.0 and 1.0, "
@@ -657,6 +772,8 @@ class ContextItem(SerializableRecord):
             raise ValueError("ContextItem.memory_id must not be empty")
         if not self.content.strip():
             raise ValueError("ContextItem.content must not be empty")
+        if math.isnan(self.rank_score) or math.isinf(self.rank_score):
+            raise ValueError(f"ContextItem.rank_score must be finite, got {self.rank_score}")
         if self.token_cost < 0:
             raise ValueError(f"ContextItem.token_cost must be >= 0, got {self.token_cost}")
 
@@ -939,6 +1056,7 @@ __all__ = [
     "ContextManifest",
     "EventId",
     "FailureDetails",
+    "FrozenDict",
     "HarnessError",
     "IdGeneratorPort",
     "MemoryCandidate",

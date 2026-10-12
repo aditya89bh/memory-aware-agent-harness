@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from types import MappingProxyType
 
 import pytest
 
@@ -12,6 +11,7 @@ from memory_aware_agent_harness.contracts import (
     CompensationFailedError,
     ContextItem,
     ContextManifest,
+    FrozenDict,
     HarnessError,
     MemoryKind,
     MemoryRecord,
@@ -46,10 +46,10 @@ def test_memory_record_deep_immutability(sample_memory_record: MemoryRecord) -> 
     # Verify tuple collections cannot be appended
     assert isinstance(sample_memory_record.source_references, tuple)
 
-    # Verify metadata is a mapping proxy and cannot be modified
-    assert isinstance(sample_memory_record.metadata, MappingProxyType)
+    # Verify metadata is a frozen dict and cannot be modified
+    assert isinstance(sample_memory_record.metadata, FrozenDict)
     with pytest.raises(TypeError):
-        sample_memory_record.metadata["new_key"] = "forbidden"  # type: ignore[index]
+        sample_memory_record.metadata["new_key"] = "forbidden"
 
 
 def test_context_manifest_immutability(sample_context_manifest: ContextManifest) -> None:

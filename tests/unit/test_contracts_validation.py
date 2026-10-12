@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from types import MappingProxyType
 
 import pytest
 
 from memory_aware_agent_harness.contracts import (
     CandidateStatus,
     ContextManifest,
+    FrozenDict,
     MemoryCandidate,
     MemoryId,
     MemoryKind,
@@ -182,7 +182,7 @@ def test_context_manifest_validation() -> None:
             manifest_id="man_01",
             step_id=StepId("step_01"),
             included_items=(),
-            excluded_item_ids=MappingProxyType({}),
+            excluded_item_ids=FrozenDict({}),
             total_tokens=100,
             budget_limit=-1,
             compiled_prompt="",
