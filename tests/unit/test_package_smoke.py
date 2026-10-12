@@ -24,6 +24,30 @@ def test_contracts_module_can_be_imported() -> None:
     assert hasattr(contracts, "ToolProtocol")
 
 
+def test_doubles_module_can_be_imported() -> None:
+    """Verify doubles submodule exports deterministic test doubles."""
+    doubles = importlib.import_module("memory_aware_agent_harness.doubles")
+    assert hasattr(doubles, "DeterministicClock")
+    assert hasattr(doubles, "DeterministicIdGenerator")
+
+
+def test_validation_module_can_be_imported() -> None:
+    """Verify validation submodule exports validation utilities."""
+    val = importlib.import_module("memory_aware_agent_harness.validation")
+    assert hasattr(val, "validate_memory_record")
+    assert hasattr(val, "validate_external_input")
+    assert hasattr(val, "BoundaryValidationError")
+
+
+def test_py_typed_marker_is_packaged() -> None:
+    """Verify py.typed marker file exists in package root for PEP 561 compliance."""
+    pkg = importlib.import_module("memory_aware_agent_harness")
+    assert pkg.__file__ is not None
+    pkg_dir = Path(pkg.__file__).resolve().parent
+    py_typed = pkg_dir / "py.typed"
+    assert py_typed.is_file(), f"py.typed marker missing at {py_typed}"
+
+
 def test_pyproject_toml_exists_and_is_valid() -> None:
     """Verify pyproject.toml exists in root and contains expected keys."""
     root_dir = Path(__file__).resolve().parent.parent.parent
