@@ -347,6 +347,8 @@ CREATE TABLE IF NOT EXISTS memory_records (
     state TEXT NOT NULL, -- 'active', 'superseded', 'expired', 'deleted'
     confidence REAL NOT NULL DEFAULT 1.0,
     salience REAL NOT NULL DEFAULT 0.5,
+    origin TEXT NOT NULL DEFAULT 'system_provided', -- 'system_provided', 'user_explicit', 'agent_observation', 'derived_consolidation', 'external_retrieval'
+    source_references_json TEXT, -- JSON array of source reference IDs
     access_count INTEGER NOT NULL DEFAULT 0,
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
@@ -444,7 +446,7 @@ To guarantee atomicity and prevent corrupted or phantom state across crashes or 
 - **Durability Trade-offs:** `PRAGMA synchronous = NORMAL;` provides application-crash resilience in WAL mode (committed transactions survive unexpected process crashes). However, power loss or host kernel panics could theoretically lose recent un-fsynced WAL frames. For mission-critical environments requiring full power-loss durability, `synchronous = FULL` or `EXTRA` is configurable via storage settings.
 - **Referential Integrity:** `PRAGMA foreign_keys = ON;` enforces relational cascade and foreign key constraints across runs, steps, lineage, and invocations.
 - **Secure Deletion:** `PRAGMA secure_delete = ON;` overwrites freed database pages with zeroes upon deletion, eliminating remnants from SQLite unallocated pages.
-- **Strict Relational Multi-Tenant Isolation:** Tenant boundary isolation is enforced strictly via parameterized queries (`WHERE namespace_id = ?`) with partial composite index coverage (`idx_memories_active`). Multi-tenant access control does not rely on speculative cryptographic namespace claims.
+- **Relational Multi-Tenant Isolation:** Tenant boundary isolation is enforced strictly via parameterized queries (`WHERE namespace_id = ?`) with composite index coverage on `memory_records` and `runs`. Child entities (`checkpoints` and `trace_events`) reference `runs(run_id)`; tenant isolation for child entities in the Phase 0 reference schema is enforced relationally via joins on `runs WHERE namespace_id = ?`. Direct `namespace_id` columns and index coverage will be allocated on child entities during Phase 2 storage persistence (M-05) for redundant defense-in-depth isolation.
 
 ---
 
@@ -476,6 +478,12 @@ flowchart TD
 - Memory records and checkpoint states written on branch $B$ are strictly isolated from root and sibling branches.
 - Knowledge sharing across branches requires explicit consolidation policy evaluation.
 
+### 6.3 Checkpoint Restoration Safeguard (Anti-Resurrection)
+Checkpoint snapshots store serialized state payloads (`state_payload_json`) containing working memory, uncommitted candidates, and execution context captured at step time. If a memory was deleted or tombstoned after the checkpoint was created, rolling back to that checkpoint must never re-introduce the purged information into active execution:
+- **Tombstone Reconciliation:** Before rehydrating working memory or state from a checkpoint blob, the restore engine queries `tombstones WHERE namespace_id = ?`.
+- **Purge Invariant:** Any memory record ID matching an active tombstone is filtered out and omitted from restored state.
+- **Conflict Handling:** If restoring execution without the purged memory produces an irreconcilable goal conflict, the run halts in `PAUSED` or `FAILED` with `StateResurrectionConflictError` requiring operator mediation.
+
 ---
 
 ## 7. Deterministic Replay & Version Compatibility
@@ -491,10 +499,10 @@ Replay determinism is strictly scoped to **canonical recorded inputs and outputs
 ## 8. Multi-Boundary Forgetting & Physical Erasure
 
 The harness coordinates retention and forgetting across six storage boundaries:
-1. **Memory Records:** Software removal via `PRAGMA secure_delete = ON; DELETE FROM memory_records WHERE id = ?;` followed by `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL log frames. Zero-retrieval enforced via `WHERE state = 'active'` index coverage.
+1. **Memory Records:** Software removal via `PRAGMA secure_delete = ON; DELETE FROM memory_records WHERE id = ?;` followed by `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL log frames. Active retrieval exclusion is enforced via `WHERE state = 'active'` index coverage.
 2. **Derived Memories:** Lineage invalidation propagates across consolidation products. Derived semantic memories referencing a purged ID are flagged as `origin_status = 'ORIGIN_PURGED'` and scheduled for eviction or re-consolidation.
-3. **Trace Events:** Retention limit pruning based on `retention_days`; summary tombstone record preserved while raw payloads are sanitized.
-4. **Checkpoints:** Expired snapshot pruning; cascade deletion of child snapshots when parent run is scrubbed.
+3. **Trace Events & Embedded Payloads:** Retention limit pruning based on `retention_days`; summary tombstone record preserved while raw payloads are sanitized. Where erased memory contents were embedded in historical trace manifests, retention-based compaction scrubs the raw text payloads.
+4. **Checkpoints & Restoration Safeguards:** Expired snapshot pruning; cascade deletion of child snapshots when parent run is scrubbed. Historical checkpoint state payloads are subjected to tombstone reconciliation upon restore, ensuring historical snapshots cannot resurrect erased memories.
 5. **In-Memory Caches:** Instant cache key eviction on tombstone emission or step boundary.
 6. **Exported Artifacts & Backups:** Filter pipelines omit tombstoned records during export; point-in-time restore scripts apply tombstone filters during rehydration.
 7. **Physical Erasure Realism:** SQLite `PRAGMA secure_delete = ON` overwrites freed database pages with zeroes and WAL truncation drains log frames. However, on modern solid-state media (NVMe/SATA SSDs), the Flash Translation Layer (FTL) performs wear-leveling and asynchronous TRIM/garbage collection. User-space POSIX file operations cannot guarantee physical flash cell destruction. The harness guarantees software-level retrieval exclusion, zero-fill page deletion, WAL drainage, and derived lineage purging.
@@ -543,7 +551,7 @@ memory-aware-agent-harness/
 │   ├── 02_crash_recovery_idempotency.py
 │   └── 03_privacy_forgetting_tombstones.py
 └── docs/
-    ├── adr/                      # Architecture Decision Records (ADR-001 to ADR-011)
+    ├── adr/                      # Architecture Decision Records (ADR-0001 to ADR-0011)
     ├── lifecycle.md
     ├── memory_models.md
     └── security.md
@@ -555,14 +563,14 @@ memory-aware-agent-harness/
 
 | ADR ID | Title | Summary of Decision | Reversal Trigger |
 |---|---|---|---|
-| **ADR-001** | Modular Monolith vs. Distributed Extension | Single-process Python 3.11+ modular monolith with ports-and-adapters. Zero RPC latency. | Multi-agent distributed concurrency becomes an explicit requirement. |
-| **ADR-002** | Unified SQLite Table for Four Memory Categories | Single `memory_records` table with indexed `kind` column rather than 4 separate tables. | Empirical proof of table lock contention across memory tiers. |
-| **ADR-003** | SQLite WAL Persistence as Reference Storage | SQLite in WAL mode with transactional boundaries and strict namespace indexing. | Distributed multi-node persistence required. |
-| **ADR-004** | Multi-Signal Retrieval & Budgeted Manifest | Combines lexical/BM25 relevance, recency decay, salience, and access frequency. | Learned re-ranker reliably outperforms within latency budget. |
-| **ADR-005** | Candidate Quarantine & Explicit Write Policy | Extracted memories are quarantined as `MemoryCandidate` until passed by policy. | None (core safety invariant). |
-| **ADR-006** | State Rollback vs. Fallible Side-Effect Compensation | Internal state resets cleanly; mutating tools (including idempotent writes) flag dirty rollback. | None (fundamental physical constraint). |
-| **ADR-007** | Version-Bounded Deterministic Replay & Test Doubles | Determinism guaranteed only for recorded traces under compatible schema/model versions. | None (testing & CI requirement). |
-| **ADR-008** | Multi-Boundary Verifiable Forgetting & Erasure Lineage | Durable tombstones, WAL truncation, and derived memory invalidation with SSD physical realism. | None (privacy & compliance requirement). |
-| **ADR-009** | Phase 0 Packaging & Scaffolding Strategy | Introduce minimal `pyproject.toml`, linters, and smoke CI in Phase 0 without runtime code. | None (standard engineering practice). |
-| **ADR-010** | Deep Immutability, Normalization, and Canonical Serialization | Public records use recursive freezing to FrozenDict/tuples and canonical JSON roundtrips. | None (contract integrity requirement). |
-| **ADR-011** | Strong Type Identifiers (NewType) and PEP 561 Typing | NewType domain identifiers and py.typed marker for compile-time safety and library consumption. | None (strict typing requirement). |
+| **ADR-0001** | Modular Monolith vs. Distributed Extension | Single-process Python 3.11+ modular monolith with ports-and-adapters. Zero RPC latency. | Multi-agent distributed concurrency becomes an explicit requirement. |
+| **ADR-0002** | Unified SQLite Table for Four Memory Categories | Single `memory_records` table with indexed `kind` column rather than 4 separate tables. | Empirical proof of table lock contention across memory tiers. |
+| **ADR-0003** | SQLite WAL Persistence as Reference Storage | SQLite in WAL mode with transactional boundaries and strict namespace indexing. | Distributed multi-node persistence required. |
+| **ADR-0004** | Multi-Signal Retrieval & Budgeted Manifest | Combines lexical/BM25 relevance, recency decay, salience, and access frequency. | Learned re-ranker reliably outperforms within latency budget. |
+| **ADR-0005** | Candidate Quarantine & Explicit Write Policy | Extracted memories are quarantined as `MemoryCandidate` until passed by policy. | None (core safety invariant). |
+| **ADR-0006** | State Rollback vs. Fallible Side-Effect Compensation | Internal state resets cleanly; mutating tools (including idempotent writes) flag dirty rollback. | None (fundamental physical constraint). |
+| **ADR-0007** | Version-Bounded Deterministic Replay & Test Doubles | Determinism guaranteed only for recorded traces under compatible schema/model versions. | None (testing & CI requirement). |
+| **ADR-0008** | Multi-Boundary Verifiable Forgetting & Erasure Lineage | Durable tombstones, WAL truncation, and derived memory invalidation with SSD physical realism. | None (privacy & compliance requirement). |
+| **ADR-0009** | Phase 0 Packaging & Scaffolding Strategy | Introduce minimal `pyproject.toml`, linters, and smoke CI in Phase 0 without runtime code. | None (standard engineering practice). |
+| **ADR-0010** | Deep Immutability, Normalization, and Canonical Serialization | Public records use recursive freezing to FrozenDict/tuples and canonical JSON roundtrips. | None (contract integrity requirement). |
+| **ADR-0011** | Strong Type Identifiers (NewType) and PEP 561 Typing | NewType domain identifiers and py.typed marker for compile-time safety and library consumption. | None (strict typing requirement). |

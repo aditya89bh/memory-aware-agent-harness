@@ -10,8 +10,8 @@
 
 | Phase | Focus Area | Target Commits | Cumulative Commits | Milestone / Release Gate |
 |---|---|:---:|:---:|---|
-| **Phase 0** | Foundation, Specs, Package Setup & Remediation | 34 | 34 | Project skeleton, typed contracts, & approved specs |
-| **Phase 1** | Core Runtime & Lifecycle | 27 | 61 | FSM execution & budget bounds |
+| **Phase 0** | Foundation, Specs, Package Setup & Remediation | 35 | 35 | Project skeleton, typed contracts, & approved specs |
+| **Phase 1** | Core Runtime & Lifecycle | 26 | 61 | FSM execution & budget bounds |
 | **Phase 2** | Memory Model & Storage Abstractions | 31 | 92 | Unified SQLite WAL persistence |
 | **Phase 3** | Retrieval, Ranking, Context Compiler | 31 | 123 | Multi-signal ranker & fenced context |
 | **Phase 4** | Memory Writes, Consolidation, Forgetting | 28 | 151 | Quarantined writes & verifiable deletion |
@@ -37,7 +37,7 @@ The following 17 baseline commits established the Phase 0 foundation up to publi
 4. `78528bc`: `docs(spec): reconcile execution FSM, unified storage, and retention boundaries`
 5. `a98153b`: `docs(architecture): specify deep immutability, fallible compensation, and SQLite WAL schema`
 6. `0cf28f0`: `docs(roadmap): expand 13-phase master plan with commit allocation and release gates`
-7. `9836f57`: `docs(adr): add architecture decision records ADR-0001 through ADR-010`
+7. `9836f57`: `docs(adr): add architecture decision records ADR-0001 through ADR-0010`
 8. `837b8cb`: `docs(security): establish security architecture, threat model, and untrusted boundaries`
 9. `818bdf2`: `build: create initial pyproject.toml and project metadata`
 10. `d82d327`: `chore(lint): configure ruff linting, formatting, and pre-commit hooks`
@@ -63,29 +63,60 @@ Addressing Claude Code independent architecture review findings (H-01 through H-
 27. `dcf1ebe`: `test(remediation): add comprehensive negative-path and failure test suite` (M-10)
 28. `8deb860`: `docs(report): compile independent review remediation matrix and validation evidence` (Round 1 report)
 
-### 2.3 Independent Review Remediation Round 2 Commits (Commits 29 to 34)
+### 2.3 Independent Review Remediation Round 2 Commits (Commits 29 to 35)
 Targeted remediation following independent reproduction of H-01, H-03, and N-01:
 29. `a2b751b`: `fix(contracts): replace MappingProxyType with FrozenDict and harden serialization` (H-01 complete fix: hash, deepcopy, pickle, asdict, UTC equivalence, NaN/Inf and invalid metadata rejection)
 30. `12d05b6`: `feat(contracts): require execution contexts, integrate token usage and failure details` (H-03 complete fix: mandatory contexts, cancellation/deadline semantics, TokenUsage/FailureDetails integration, structured exception fields)
 31. `fef9606`: `docs(remediation): reconcile git commit history and audit matrix for review round 2` (N-01 complete fix: git log synchronization, finding classifications, roadmap 300–350 reconciliation)
 32. `3172866`: `docs(remediation): reconcile audit matrix with full finding taxonomy and residual items` (Matrix finding taxonomy reconciliation: full Claude finding catalog, explicit statuses, commit citations, technical limits)
 33. `a7c3f4b`: `docs(architecture): reconcile FSM diagrams, durability, erasure, and security boundaries` (Architecture, security, and ADR reconciliation: FSM legal transitions, SQLite secure_delete, durability trade-offs, SSD wear-leveling)
-34. `HEAD`: `docs(roadmap): reconcile commit history, traceability, and Phase 0 report` (Roadmap traceability and Phase 0 report synchronization across all 34 commits)
+34. `4083de7`: `docs(roadmap): reconcile commit history, traceability, and Phase 0 report` (Roadmap traceability and Phase 0 report synchronization across all 34 commits)
+35. `HEAD`: `docs(remediation): reconcile original finding taxonomy, residual items, and schema safeguards` (Final Phase 0 evidence reconciliation: original finding IDs, honest statuses, schema safeguards, anti-resurrection)
 
 ### 2.4 Deferred Findings & Future Phase Traceability
-All runtime implementation requirements deferred from Phase 0 are strictly tracked against their scheduled implementation phases:
-- **Phase 1 (Core Runtime & Lifecycle):** Runtime FSM execution engine, step lifecycle execution, transition validation against `LEGAL_RUN_TRANSITIONS` & `LEGAL_STEP_TRANSITIONS`, `RunBudgets` enforcement, and cancellation/timeout handling.
-- **Phase 2 (Memory Model & Storage Abstractions):** Unified SQLite WAL persistence (`memory_records`, `runs`, `run_steps`), `PRAGMA secure_delete = ON`, configurable `synchronous = NORMAL/FULL`, parameterized `WHERE namespace_id = ?` relational query isolation.
-- **Phase 3 (Retrieval, Ranking, Context Compiler):** Multi-signal retrieval scoring ($w_{rel}, w_{rec}, w_{sal}, w_{freq}, P_{decay}$), prompt budget allocation, and structural XML escaping (`&`, `<`, `>`, `"`, `'`) for untrusted memory fencing.
-- **Phase 4 (Memory Writes, Consolidation, Forgetting):** Memory candidate quarantine, write policy evaluation, episodic-to-semantic consolidation pipelines, multi-boundary verifiable forgetting engine, and durable tombstones.
-- **Phase 5 (Tool Runtime & Routing):** Sandboxed tool dispatcher, Pydantic v2 argument validation, intent registration (`status = 'pending'`), idempotency checking, and crash recovery with `OUTCOME_UNKNOWN`.
-- **Phase 6 (Checkpointing, Resume, Rollback, Branching):** State checkpointing, branch DAG, safe resume, dirty rollback detection (`PARTIAL_DIRTY_ROLLBACK`), and fallible compensation execution.
-- **Phase 7 (Tracing, Provenance, Event Model):** Append-only trace log, automated PII/secret redactor, JSONL exporter, and deterministic SHA-256 state hashing across transitions.
-- **Phase 8 (Replay & Deterministic Hooks):** Trace replayer and bit-for-bit replay verification with deterministic doubles.
-- **Phase 9 (Evaluation Framework & Metrics):** 3-baseline comparative evaluation runner (Stateless, Naive RAG, Memory-Aware).
-- **Phase 10 (Benchmarks & Regression Suites):** Reproducible offline benchmark suites and statistical reporting.
-- **Phase 11 (Integrations & Realistic Demos):** Three runnable end-to-end production scenarios and model/tool adapters.
-- **Phase 12 (Hardening, Docs, Packaging, Release):** Cryptographic HMAC state authentication, schema migration verification, security audit, packaging distribution freeze.
+All runtime implementation requirements and findings deferred from Phase 0 are strictly tracked against their scheduled implementation phases:
+- **Phase 1 (Core Runtime & Lifecycle):**
+  - **R-1:** Metadata round-trip validation and normalization across nested structures.
+  - **R-2:** Deep immutability hardening for `FrozenDict` and protection against inherited dict bypasses.
+  - **R-3:** Live cooperative cancellation signaling (cancellation as a live event/signal rather than a frozen snapshot).
+  - **R-4:** Token accounting invariants (monotonic consumption, budget bounds) and mandatory failure detail enforcement.
+  - **M-03:** Runtime input validation, enum coercion, and boundary validation.
+  - **M-06:** Pinned Ruff linter version and repository-wide CI quality gates across runtime packages.
+  - **M-07:** Wheel-installed package test execution and substantive test coverage gate ($\ge 85\%$).
+  - **M-11:** Setuptools packaging compatibility matrix and distribution verification.
+  - **H-02:** Runtime FSM execution engine, step lifecycle execution, transition validation against `LEGAL_RUN_TRANSITIONS` & `LEGAL_STEP_TRANSITIONS`, `RunBudgets` enforcement, orphaned-run recovery execution, and cancellation/timeout handling.
+- **Phase 2 (Memory Model & Storage Abstractions):**
+  - **M-04:** Scored retrieval and deterministic storage interfaces (`MemoryStoreProtocol` scoring, deterministic time, versioning, and lifecycle operations).
+  - **M-05:** Storage scoping across run, branch, namespace, and provenance (`namespace_id`, `run_id`, `branch_id`, and `origin` scoping; direct `namespace_id` columns on child tables `checkpoints` and `trace_events`).
+  - **Checkpoint & Trace Erasure Obligations & Restoration Safeguards:** Cascading purge of historical checkpoints referencing deleted runs; trace event payload compaction based on `retention_days`; **Tombstone Reconciliation** during checkpoint restoration to prevent resurrecting erased memories.
+  - **M-08:** SQLite storage schema allocation for schema versions, state hashes, and integrity constraints.
+  - **M-09:** Redaction pipeline execution before storage persistence (preventing credential leakage into SQLite WAL).
+  - **H-04:** Physical SQLite persistence transaction manager, 4-phase step commit protocol (`INTENT_RECORDED` $\rightarrow$ `TOOL_DISPATCH` $\rightarrow$ `OUTCOME_UPDATE` $\rightarrow$ `ATOMIC_STEP_COMMIT`), WAL file durability (`synchronous = NORMAL/FULL`), and `UNIQUE(namespace_id, tool_name, idempotency_key)` uniqueness constraints.
+- **Phase 3 (Retrieval, Ranking, Context Compiler):**
+  - **H-07:** Fenced prompt compiler with mandatory XML entity escaping (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;`) for untrusted memory content; 5-class `MemoryOrigin` provenance boundary enforcement; token budget allocation for context compilation.
+  - Multi-signal retrieval scoring ($w_{rel}, w_{rec}, w_{sal}, w_{freq}, P_{decay}$).
+- **Phase 4 (Memory Writes, Consolidation, Forgetting):**
+  - **H-06:** Multi-boundary verifiable forgetting engine; physical software deletion (`PRAGMA secure_delete = ON; DELETE; wal_checkpoint(TRUNCATE)`); lineage propagation marking derived memories as `origin_status = 'ORIGIN_PURGED'`; durable tombstones.
+  - Memory candidate quarantine and explicit write policy evaluation; episodic-to-semantic consolidation pipelines.
+- **Phase 5 (Tool Runtime & Routing):**
+  - Sandboxed tool dispatcher and Pydantic v2 argument validation.
+  - Durable tool invocation intent registration (`status = 'pending'`).
+  - Idempotency uniqueness checking and crash recovery handling with `OUTCOME_UNKNOWN`.
+- **Phase 6 (Checkpointing, Resume, Rollback, Branching):**
+  - **H-05:** State rollback semantics differentiating `CLEAN_ROLLBACK` (for `READ_ONLY`) from `PARTIAL_DIRTY_ROLLBACK` (for `IDEMPOTENT_WRITE` and `NON_IDEMPOTENT_WRITE`); fallible side-effect compensation execution; branch DAG isolation via `branch_id`.
+- **Phase 7 (Tracing, Provenance, Event Model):**
+  - **M-09:** Full automated PII/secret redactor module and append-only trace log.
+  - JSONL exporter and deterministic SHA-256 state hashing across transitions for replay divergence detection.
+- **Phase 8 (Replay & Deterministic Hooks):**
+  - **M-08:** Deterministic replay engine, trace replayer, schema version compatibility validation, and bit-for-bit replay verification with deterministic doubles.
+- **Phase 9 (Evaluation Framework & Metrics):**
+  - **M-10:** 3-baseline comparative evaluation runner (Stateless, Naive RAG, Memory-Aware) with meaningful baselines against existing memory-enabled agent architectures.
+- **Phase 10 (Benchmarks & Regression Suites):**
+  - Reproducible offline benchmark suites, long-horizon memory retention benchmarks, and statistical reporting.
+- **Phase 11 (Integrations & Realistic Demos):**
+  - Three runnable end-to-end production scenarios and model/tool adapters.
+- **Phase 12 (Hardening, Docs, Packaging, Release):**
+  - Cryptographic HMAC state authentication for tamper detection, schema migration verification, security audit, and packaging distribution freeze.
 
 > [!NOTE]
 > **Implementation Status:** Work on Phases 1 through 12 is explicitly unstarted. Phase 0 contains exclusively contracts, deterministic test doubles, packaging, and validation scaffolding.

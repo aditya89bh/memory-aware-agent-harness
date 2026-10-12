@@ -55,15 +55,17 @@ The `telemetry.redactor` module runs before any record is committed to SQLite or
 ### 3.3 Database Isolation & Query Invariants
 To prevent cross-tenant contamination:
 - No raw string formatting or SQL string concatenation is permitted anywhere in the repository.
-- Every SELECT, INSERT, UPDATE, and DELETE query on `memory_records`, `runs`, `checkpoints`, and `trace_events` strictly includes `WHERE namespace_id = ?`.
+- Every SELECT, INSERT, UPDATE, and DELETE query on `memory_records` and `runs` strictly binds `WHERE namespace_id = ?` as a mandatory parameterized argument.
+- Child entities (`checkpoints` and `trace_events`) reference `runs(run_id)`. In the reference schema, tenant isolation for child entities is enforced relationally via joins on `runs(run_id) WHERE namespace_id = ?`. Direct `namespace_id` columns and index coverage will be allocated on child entities during Phase 2 storage persistence (M-05) for defense-in-depth relational isolation.
 - Automated regression test suites execute adversarial multi-namespace queries to verify zero cross-tenant leakage.
 
 ### 3.4 Multi-Boundary Erasure & Privacy Hygiene
 The harness coordinates retention and privacy deletion across six storage boundaries:
-- **Active Memory Storage:** Deletion issues `PRAGMA secure_delete = ON; DELETE FROM memory_records WHERE id = ?;` followed by `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL log frames. Zero-retrieval invariant is enforced via `WHERE state = 'active'` index coverage.
+- **Active Memory Storage:** Deletion issues `PRAGMA secure_delete = ON; DELETE FROM memory_records WHERE id = ?;` followed by `PRAGMA wal_checkpoint(TRUNCATE)` to drain WAL log frames. Active retrieval exclusion is enforced via `WHERE state = 'active'` index coverage.
 - **Lineage Propagation:** Derived memories referencing purged records are flagged as `origin_status = 'ORIGIN_PURGED'` and scheduled for eviction or re-consolidation.
-- **Trace Events:** Payload scrubbing and retention limit pruning based on `retention_days`; monotonic sequence counters and run tombstones are preserved.
-- **Checkpoints & Caches:** Cascading deletion of expired checkpoint blobs; instant in-memory cache eviction on step boundary or tombstone emission.
+- **Trace Events & Embedded Payloads:** Historical trace event payloads older than configured `retention_days` are scrubbed during retention pruning; monotonic sequence counters and run tombstones are preserved. Where erased memories were embedded inside historical trace payloads, retention compaction purges the raw text.
+- **Checkpoints & Restoration Safeguards:** Expired checkpoint blobs are removed via cascading deletion. To prevent historical snapshots from resurrecting erased content, checkpoint rehydration executes a **Tombstone Reconciliation Safeguard**: active tombstones are queried and any erased memory IDs are stripped from working memory before execution resumes.
+- **In-Memory Caches:** Instant in-memory cache key eviction occurs on step boundary or tombstone emission.
 - **Physical Erasure Realism:** `PRAGMA secure_delete = ON` overwrites database pages with zeros. However, on modern flash storage (NVMe/SATA SSDs), the Flash Translation Layer (FTL) performs wear-leveling and asynchronous TRIM/garbage collection. User-space POSIX file operations cannot guarantee physical flash cell destruction.
 
 ### 3.5 Crash-Safe Side Effects & Orphaned-Run Protection

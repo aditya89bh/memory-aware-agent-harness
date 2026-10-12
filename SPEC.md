@@ -230,7 +230,7 @@ $$\text{Score}(m, q) = w_{rel} \cdot S_{rel}(m, q) + w_{rec} \cdot S_{rec}(m) + 
    - `AGENT_OBSERVATION`: Observations extracted from tool outputs and environment interactions.
    - `DERIVED_CONSOLIDATION`: Synthesized semantic memories produced by consolidation pipelines.
    - `EXTERNAL_RETRIEVAL`: Context ingested from external knowledge bases or APIs.
-5. **Multi-Tenant Namespace Isolation:** Storage and retrieval enforce complete tenant boundary isolation via indexed `namespace_id`. Queries and writes are strictly scoped to the active namespace (`WHERE namespace_id = ?`); cross-namespace data access raises `PolicyViolationError`.
+5. **Multi-Tenant Namespace Isolation:** Storage and retrieval enforce tenant boundary isolation via indexed `namespace_id` on `memory_records` and `runs` (`WHERE namespace_id = ?`). Child entities (`checkpoints` and `trace_events`) reference `runs(run_id)`; tenant scoping is enforced relationally via foreign-key joins to `runs WHERE namespace_id = ?`, with direct `namespace_id` columns allocated in Phase 2 persistence (M-05). Cross-namespace access raises `PolicyViolationError`.
 6. **State Integrity & Replay Divergence Detection:** Checkpoint and event chain integrity is protected via deterministic SHA-256 state hashing across transitions, ensuring verifiable detection of state divergence and local file corruption during replay or rehydration. Note: Authenticated cryptographic tamper detection against adversarial database manipulation requires HMAC or digital signatures (deferred to Phase 12 security hardening).
 
 ---
@@ -254,8 +254,19 @@ The harness formalizes retention and deletion across all storage boundaries. It 
 ### 6.2 Physical Erasure Realism
 SQLite `PRAGMA secure_delete = ON` overwrites deleted content with zeros in database pages, and `PRAGMA wal_checkpoint(TRUNCATE)` drains WAL log frames. However, on modern solid-state media (NVMe/SATA SSDs), hardware Flash Translation Layers (FTL) perform wear-leveling and asynchronous TRIM/garbage collection. Physical flash cell content destruction cannot be guaranteed by user-space POSIX file operations alone; the harness explicitly guarantees software-level retrieval exclusion, zero-fill database deletion, WAL frame truncation, and derived lineage purging.
 
-### 6.3 Zero-Retrieval Invariant
-Any memory record with an active tombstone, an expired TTL (`expires_at <= current_time`), or a state in `('deleted', 'superseded', 'expired')` is **strictly prohibited from appearing in any retrieval query or compiled context**. This is enforced via parameterized SQL queries with composite index coverage.
+### 6.3 Retrieval Exclusion Invariant
+Any memory record with an active tombstone, an expired TTL (`expires_at <= current_time`), or a state in `('deleted', 'superseded', 'expired')` is **strictly prohibited from appearing in any retrieval query or compiled context**. This is enforced via parameterized SQL queries with composite index coverage (`WHERE state = 'active'`).
+
+### 6.4 Embedded Content in Checkpoint and Trace Payloads
+Historical checkpoint state payloads (`state_payload_json`) and trace event manifests (`payload_json`) may contain copies of memory records that were active at the time the step was executed. When a memory record is purged:
+1. **Retention Pruning:** Historical trace event payloads older than configured retention limits (`retention_days`) are purged or scrubbed during compaction; sequence counters and run tombstones remain intact.
+2. **Checkpoint Invalidation:** Historical checkpoints referencing deleted runs are cascade-purged. For active runs, historical checkpoint payloads undergo payload scrubbing during compaction if configured.
+
+### 6.5 Checkpoint Restoration Safeguard (Anti-Resurrection)
+To prevent checkpoint restoration or execution rollback from resurrecting erased memories into active state:
+1. **Tombstone Reconciliation:** Prior to rehydrating state from a historical `state_payload_json`, the rehydration engine queries `tombstones WHERE namespace_id = ?`.
+2. **Purge Filtering:** Any memory record ID matching an active tombstone is strictly stripped and omitted from the restored working memory and candidate pool.
+3. **Conflict Refusal:** If execution cannot safely proceed without the purged information, rehydration halts and transitions the run to `PAUSED` or `FAILED` with `StateResurrectionConflictError` requiring human operator triage.
 
 ---
 

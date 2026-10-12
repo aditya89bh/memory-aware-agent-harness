@@ -7,7 +7,7 @@
 
 ---
 
-## 1. True Git Log Commit History (34 Commits Total)
+## 1. True Git Log Commit History (35 Commits Total)
 
 The table below reflects the exact Git commit history directly from `git log --reverse`:
 
@@ -46,20 +46,21 @@ The table below reflects the exact Git commit history directly from `git log --r
 | **31** | `fef9606` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(remediation)` | docs(remediation): reconcile git commit history and audit matrix for review round 2 |
 | **32** | `3172866` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(remediation)` | docs(remediation): reconcile audit matrix with full finding taxonomy and residual items |
 | **33** | `a7c3f4b` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(architecture)` | docs(architecture): reconcile FSM diagrams, durability, erasure, and security boundaries |
-| **34** | `HEAD` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(roadmap)` | docs(roadmap): reconcile commit history, traceability, and Phase 0 report |
+| **34** | `4083de7` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(roadmap)` | docs(roadmap): reconcile commit history, traceability, and Phase 0 report |
+| **35** | `HEAD` | Aditya bhatia `<aditya89bh@gmail.com>` | 2026-10-12 | `docs(remediation)` | docs(remediation): reconcile original finding taxonomy, residual items, and schema safeguards |
 
 ---
 
 ## 2. Deliverables Summary
 
 1. **Foundational Architecture Documents:**
-   - [SPEC.md](../SPEC.md): Full specification covering 12 pillars, Run States vs. Step Operations, retention across 6 boundaries, fallible compensation, and traceability matrix.
-   - [ARCHITECTURE.md](../ARCHITECTURE.md): Component topology, public API signatures, unified SQLite WAL schema, sequence diagrams, and ADR summary.
-   - [ROADMAP.md](../ROADMAP.md): 13-phase master roadmap targeting 340 commits (agreed 300–350 range), quality standards, testing/benchmark methodology, and release gates (`v0.1.0` through `v1.0.0`).
+   - [SPEC.md](../SPEC.md): Full specification covering 12 pillars, Run States vs. Step Operations, retention across 6 boundaries, fallible compensation, anti-resurrection safeguards, and traceability matrix.
+   - [ARCHITECTURE.md](../ARCHITECTURE.md): Component topology, public API signatures, unified SQLite WAL schema with provenance allocations, sequence diagrams, and ADR summary.
+   - [ROADMAP.md](../ROADMAP.md): 13-phase master roadmap targeting 340 commits (agreed 300–350 range), quality standards, testing/benchmark methodology, detailed phase traceability, and release gates (`v0.1.0` through `v1.0.0`).
 2. **Architecture Decision Records:**
-   - [docs/adr/](adr/): ADR-0001 through ADR-0011 covering modular monolith, unified schema, SQLite WAL, multi-signal retrieval, candidate quarantine, fallible compensation, scoped replay, multi-boundary forgetting, Phase 0 packaging, deep immutability, and NewType domain typing.
+   - [docs/adr/](adr/): ADR-0001 through ADR-0011 covering modular monolith, unified schema, SQLite WAL, multi-signal retrieval, candidate quarantine, fallible compensation, scoped replay, multi-boundary forgetting with realistic guarantees, Phase 0 packaging, deep immutability, and NewType domain typing.
 3. **Security Architecture & Threat Model:**
-   - [docs/security.md](security.md): Threat matrix (TH-01 through TH-06), untrusted content XML fencing with mandatory entity escaping, automated PII/secret redactor, and database isolation invariants.
+   - [docs/security.md](security.md): Threat matrix (TH-01 through TH-06), untrusted content XML fencing with mandatory entity escaping, automated PII/secret redactor, relational child entity isolation, and database isolation invariants.
 4. **Packaging, Tooling & Quality Scaffolding:**
    - `pyproject.toml`: Modern packaging metadata, dependencies, Ruff, strict Mypy, and Pytest configuration.
    - `LICENSE`: Full Apache License 2.0 text.
@@ -71,7 +72,7 @@ The table below reflects the exact Git commit history directly from `git log --r
    - `src/memory_aware_agent_harness/py.typed`: PEP 561 typing marker.
    - `tests/`: 57 comprehensive unit, validation, serialization, failure, and execution context tests passing with 100% success rate.
 6. **Remediation Documentation:**
-   - [docs/remediation_matrix.md](remediation_matrix.md): Complete categorization and evidence for all 7 High-severity findings (H-01 through H-07), 11 Medium findings (M-01 through M-11), and documentation findings (N-01).
+   - [docs/remediation_matrix.md](remediation_matrix.md): Preserves exact original taxonomy of 7 High findings (H-01 to H-07), 4 residual findings (R-1 to R-4), 11 Medium findings (M-01 to M-11), process finding (N-01), and 6 documentation findings (D-01 to D-06) with truthful status reporting (`RESOLVED`, `OPEN`, `SPECIFIED / DEFERRED`).
 
 ---
 
@@ -85,4 +86,4 @@ The table below reflects the exact Git commit history directly from `git log --r
 - **Wheel Smoke Test:** Tested in isolated virtual environment outside repository root; verified version, contracts, deterministic doubles, and `py.typed` marker.
 - **Working Tree:** Clean.
 - **Runtime Code:** Strictly zero Phase 1 runtime implementation written (domain contracts and deterministic test doubles only).
-- **Authorship Attribution:** `Aditya bhatia <aditya89bh@gmail.com>` across all 34 commits. Zero AI trailers.
+- **Authorship Attribution:** `Aditya bhatia <aditya89bh@gmail.com>` across all 35 commits. Zero AI trailers.
