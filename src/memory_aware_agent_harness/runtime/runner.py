@@ -7,7 +7,6 @@ model decision dispatching, 8-phase step lifecycle execution, and canonical resu
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import Any
@@ -618,10 +617,10 @@ class AgentRuntime:
                 cancellation_token=state.cancellation_token,
             )
 
-            t_start = time.perf_counter()
+            t_start = self.clock.now()
             try:
                 raw_res = tool.execute(call.arguments, tool_ctx)
-                t_elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                t_elapsed_ms = (self.clock.now() - t_start).total_seconds() * 1000.0
                 tool_results.append(
                     ToolResult(
                         invocation_id=inv_id,
@@ -636,7 +635,7 @@ class AgentRuntime:
             except (ExecutionCancelledError, PolicyViolationError):
                 raise
             except Exception as exc:
-                t_elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                t_elapsed_ms = (self.clock.now() - t_start).total_seconds() * 1000.0
                 is_mutating = tool.side_effect in (
                     SideEffectType.IDEMPOTENT_WRITE,
                     SideEffectType.NON_IDEMPOTENT_WRITE,

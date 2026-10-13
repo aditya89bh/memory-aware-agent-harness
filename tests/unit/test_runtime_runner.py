@@ -196,3 +196,72 @@ def test_agent_runtime_pre_execution_validation() -> None:
             namespace_id=NamespaceId("ns_01"),
             cancellation_token="not_a_token",  # type: ignore[arg-type]
         )
+
+
+def test_agent_runtime_deterministic_replay_produces_identical_json() -> None:
+    """Injectable clock and doubles produce bit-for-bit identical RunResult.to_json()."""
+    from collections.abc import Mapping
+    from datetime import UTC, datetime
+    from typing import Any
+
+    from memory_aware_agent_harness.contracts import (
+        SideEffectType,
+        ToolCallContext,
+        ToolCallRequest,
+    )
+
+    class DeterministicEchoTool(ToolProtocol):
+        def __init__(self) -> None:
+            self.name = "echo_tool"
+            self.description = "Deterministic echo tool"
+            self.side_effect = SideEffectType.READ_ONLY
+
+        def get_schema(self) -> Mapping[str, Any]:
+            return {"type": "object", "properties": {"msg": {"type": "string"}}}
+
+        def execute(
+            self, arguments: Mapping[str, Any], context: ToolCallContext
+        ) -> Mapping[str, Any]:
+            return {"echo": arguments.get("msg", "")}
+
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    def run_scenario() -> str:
+        clock = DeterministicClock(start_time=t0)
+        id_gen = DeterministicIdGenerator(prefix="fixed")
+        tool = DeterministicEchoTool()
+
+        step1_dec = ModelDecision(
+            decision_id="dec_1",
+            step_id=StepId("fixed_step_run_1_1"),
+            finish_reason=ModelFinishReason.TOOL_CALL,
+            tool_calls=(
+                ToolCallRequest(call_id="c_1", tool_name="echo_tool", arguments={"msg": "hello"}),
+            ),
+            token_usage=TokenUsage(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+        )
+        step2_dec = ModelDecision(
+            decision_id="dec_2",
+            step_id=StepId("fixed_step_run_1_2"),
+            finish_reason=ModelFinishReason.STOP,
+            content="Final answer from echo: hello",
+            token_usage=TokenUsage(prompt_tokens=15, completion_tokens=15, total_tokens=30),
+        )
+        model = FakeModelAdapter(responses=[step1_dec, step2_dec])
+        runtime = AgentRuntime(
+            model=model,
+            tools=[tool],
+            clock=clock,
+            id_generator=id_gen,
+        )
+        res = runtime.run(
+            "Echo test task",
+            namespace_id=NamespaceId("ns_det"),
+            run_id=RunId("run_fixed"),
+        )
+        return res.to_json()
+
+    json_run1 = run_scenario()
+    json_run2 = run_scenario()
+
+    assert json_run1 == json_run2
