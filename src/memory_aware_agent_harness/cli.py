@@ -14,6 +14,7 @@ from typing import Any
 
 from memory_aware_agent_harness.contracts import (
     ContextManifest,
+    FailureDetails,
     ModelCallContext,
     ModelDecision,
     ModelFinishReason,
@@ -139,9 +140,13 @@ def build_scenario_adapter(scenario: str) -> tuple[FakeModelAdapter, list[ToolPr
         ) -> ModelDecision:
             # Parse observation dynamically from prompt feedback (P1-H1)
             prompt = manifest.compiled_prompt or ""
-            observed_val = "42"
+            observed_val: str | None = None
+            tool_failed = False
             for line in prompt.splitlines():
                 if "Observation (calculator" in line:
+                    if ", failed)" in line or ", outcome_unknown)" in line:
+                        tool_failed = True
+                        break
                     try:
                         raw_json = line.split(":", 1)[-1].strip()
                         parsed = json.loads(raw_json)
@@ -149,7 +154,24 @@ def build_scenario_adapter(scenario: str) -> tuple[FakeModelAdapter, list[ToolPr
                             val = parsed["result"]
                             observed_val = str(int(val)) if int(val) == val else str(val)
                     except Exception:
-                        pass
+                        tool_failed = True
+
+            if tool_failed or observed_val is None:
+                fail_details = FailureDetails(
+                    error_type="ToolObservationError",
+                    message="Calculator observation was not found or calculation failed",
+                    step_id=context.step_id,
+                    error_code="TOOL_OBSERVATION_FAILED",
+                )
+                return ModelDecision(
+                    decision_id=f"dec_err_{context.step_id}",
+                    step_id=context.step_id,
+                    finish_reason=ModelFinishReason.ERROR,
+                    content="Calculation failed: unable to obtain calculator tool observation.",
+                    token_usage=TokenUsage(prompt_tokens=40, completion_tokens=15, total_tokens=55),
+                    failure_details=fail_details,
+                )
+
             return ModelDecision(
                 decision_id=f"dec_final_{context.step_id}",
                 step_id=context.step_id,

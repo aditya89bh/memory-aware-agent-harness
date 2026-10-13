@@ -101,3 +101,77 @@ def test_main_module_execution() -> None:
     )
     assert res.returncode == 0
     assert "Agent Runtime Execution Result" in res.stdout
+
+
+def test_cli_tool_observation_derivation_and_failure_handling() -> None:
+    """CLI tool observation handler derives answer strictly from tool output without 42 fallback."""
+    from memory_aware_agent_harness.cli import build_scenario_adapter
+    from memory_aware_agent_harness.contracts import (
+        ContextManifest,
+        ModelCallContext,
+        ModelFinishReason,
+        NamespaceId,
+        RunId,
+        StepId,
+    )
+
+    adapter, _tools = build_scenario_adapter("tool")
+
+    ctx = ModelCallContext(
+        run_id=RunId("run_test"),
+        step_id=StepId("step_test"),
+        namespace_id=NamespaceId("ns_test"),
+        budget_remaining_tokens=500,
+    )
+
+    # 1. Successful observation derivation with custom value
+    manifest_ok = ContextManifest(
+        manifest_id="m_ok",
+        step_id=StepId("step_test"),
+        included_items=(),
+        excluded_item_ids={},
+        total_tokens=10,
+        budget_limit=1000,
+        compiled_prompt='Observation (calculator, completed): {"result": 42.0}',
+    )
+    adapter1, _ = build_scenario_adapter("tool")
+    _ = adapter1.decide(manifest_ok, [], ctx)  # consume step 1 tool call
+    dec_ok = adapter1.decide(manifest_ok, [], ctx)
+    assert dec_ok.finish_reason == ModelFinishReason.STOP
+    assert dec_ok.content == "Calculation complete: 21 * 2 = 42."
+
+    # 2. Missing observation returns ERROR without fallback
+    manifest_missing = ContextManifest(
+        manifest_id="m_missing",
+        step_id=StepId("step_test"),
+        included_items=(),
+        excluded_item_ids={},
+        total_tokens=10,
+        budget_limit=1000,
+        compiled_prompt="No tool observations in prompt",
+    )
+    adapter2, _ = build_scenario_adapter("tool")
+    _ = adapter2.decide(manifest_missing, [], ctx)  # consume step 1 tool call
+    dec_missing = adapter2.decide(manifest_missing, [], ctx)
+    assert dec_missing.finish_reason == ModelFinishReason.ERROR
+    assert dec_missing.failure_details is not None
+    assert dec_missing.failure_details.error_code == "TOOL_OBSERVATION_FAILED"
+    assert "42" not in (dec_missing.content or "")
+
+    # 3. Failed tool observation returns ERROR without fallback
+    manifest_failed = ContextManifest(
+        manifest_id="m_failed",
+        step_id=StepId("step_test"),
+        included_items=(),
+        excluded_item_ids={},
+        total_tokens=10,
+        budget_limit=1000,
+        compiled_prompt='Observation (calculator, failed): {"error": "Device offline"}',
+    )
+    adapter3, _ = build_scenario_adapter("tool")
+    _ = adapter3.decide(manifest_failed, [], ctx)  # consume step 1 tool call
+    dec_failed = adapter3.decide(manifest_failed, [], ctx)
+    assert dec_failed.finish_reason == ModelFinishReason.ERROR
+    assert dec_failed.failure_details is not None
+    assert dec_failed.failure_details.error_code == "TOOL_OBSERVATION_FAILED"
+    assert "42" not in (dec_failed.content or "")
