@@ -260,3 +260,176 @@ def test_run_result_provides_step_history_and_tool_results() -> None:
     assert len(result.tool_results) == 1
     assert result.tool_results[0].tool_name == "delay_tool"
     assert result.tool_results[0].status == ToolCallStatus.COMPLETED
+
+
+def test_step_budget_boundary_single_step_completed() -> None:
+    """max_steps=1, STOP on step 1 results in COMPLETED with output and history preserved."""
+    dec = ModelDecision(
+        decision_id="dec_single",
+        step_id=StepId("step_0"),
+        finish_reason=ModelFinishReason.STOP,
+        content="Single step final answer",
+        token_usage=TokenUsage(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+    )
+    model = FakeModelAdapter(responses=[dec])
+    budget = RunBudgets(max_steps=1, max_tokens=1000, max_time_seconds=60.0)
+    runtime = AgentRuntime(model=model, budgets=budget)
+
+    result = runtime.run("Single step task", namespace_id=NamespaceId("ns_step1"))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.step_count == 1
+    assert result.final_output == "Single step final answer"
+    assert len(result.step_history) == 1
+    assert result.step_history[0].decision.content == "Single step final answer"
+
+
+def test_step_budget_boundary_multi_step_completed() -> None:
+    """max_steps=2, TOOL_CALL then STOP on step 2 results in COMPLETED."""
+    sensor = _DelayTool(clock=DeterministicClock(), delay_seconds=0.0)
+    step1_dec = ModelDecision(
+        decision_id="dec_s1",
+        step_id=StepId("step_0"),
+        finish_reason=ModelFinishReason.TOOL_CALL,
+        tool_calls=(ToolCallRequest(call_id="c_1", tool_name="delay_tool", arguments={}),),
+        token_usage=TokenUsage(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+    )
+    step2_dec = ModelDecision(
+        decision_id="dec_s2",
+        step_id=StepId("step_1"),
+        finish_reason=ModelFinishReason.STOP,
+        content="Two step final answer",
+        token_usage=TokenUsage(prompt_tokens=15, completion_tokens=15, total_tokens=30),
+    )
+    model = FakeModelAdapter(responses=[step1_dec, step2_dec])
+    budget = RunBudgets(max_steps=2, max_tokens=1000, max_time_seconds=60.0)
+    runtime = AgentRuntime(model=model, tools=[sensor], budgets=budget)
+
+    result = runtime.run("Multi step task", namespace_id=NamespaceId("ns_step2"))
+
+    assert result.status == RunStatus.COMPLETED
+    assert result.step_count == 2
+    assert result.final_output == "Two step final answer"
+    assert len(result.step_history) == 2
+    assert len(result.tool_results) == 1
+
+
+def test_step_budget_boundary_nonterminal_final_step_exhausted() -> None:
+    """Nonterminal decision on final permitted step results in BUDGET_EXHAUSTED."""
+    sensor = _DelayTool(clock=DeterministicClock(), delay_seconds=0.0)
+    dec = ModelDecision(
+        decision_id="dec_nonterm",
+        step_id=StepId("step_0"),
+        finish_reason=ModelFinishReason.TOOL_CALL,
+        tool_calls=(ToolCallRequest(call_id="c_1", tool_name="delay_tool", arguments={}),),
+        token_usage=TokenUsage(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+    )
+    model = FakeModelAdapter(responses=[dec])
+    budget = RunBudgets(max_steps=1, max_tokens=1000, max_time_seconds=60.0)
+    runtime = AgentRuntime(model=model, tools=[sensor], budgets=budget)
+
+    result = runtime.run("Exhaust on step 1", namespace_id=NamespaceId("ns_exhaust1"))
+
+    assert result.status == RunStatus.BUDGET_EXHAUSTED
+    assert result.step_count == 1
+    assert result.failure_details is not None
+    assert result.failure_details.error_code == "BUDGET_EXCEEDED"
+    assert len(result.step_history) == 1
+    assert len(result.tool_results) == 1
+
+
+def test_step_budget_boundary_multi_step_nonterminal_final_step_exhausted() -> None:
+    """max_steps=2, step 1 tool call, step 2 tool call -> BUDGET_EXHAUSTED."""
+    sensor = _DelayTool(clock=DeterministicClock(), delay_seconds=0.0)
+    step1_dec = ModelDecision(
+        decision_id="dec_s1",
+        step_id=StepId("step_0"),
+        finish_reason=ModelFinishReason.TOOL_CALL,
+        tool_calls=(ToolCallRequest(call_id="c_1", tool_name="delay_tool", arguments={}),),
+        token_usage=TokenUsage(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+    )
+    step2_dec = ModelDecision(
+        decision_id="dec_s2",
+        step_id=StepId("step_1"),
+        finish_reason=ModelFinishReason.TOOL_CALL,
+        tool_calls=(ToolCallRequest(call_id="c_2", tool_name="delay_tool", arguments={}),),
+        token_usage=TokenUsage(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+    )
+    model = FakeModelAdapter(responses=[step1_dec, step2_dec])
+    budget = RunBudgets(max_steps=2, max_tokens=1000, max_time_seconds=60.0)
+    runtime = AgentRuntime(model=model, tools=[sensor], budgets=budget)
+
+    result = runtime.run("Exhaust on step 2", namespace_id=NamespaceId("ns_exhaust2"))
+
+    assert result.status == RunStatus.BUDGET_EXHAUSTED
+    assert result.step_count == 2
+    assert result.failure_details is not None
+    assert result.failure_details.error_code == "BUDGET_EXCEEDED"
+    assert len(result.step_history) == 2
+    assert len(result.tool_results) == 2
+
+
+def test_exact_token_budget_boundary() -> None:
+    """Exact token limit tokens == max_tokens is valid; tokens == max_tokens + 1 is exhausted."""
+    # Case A: tokens == max_tokens (50 == 50) -> COMPLETED
+    dec_exact = ModelDecision(
+        decision_id="dec_exact",
+        step_id=StepId("step_0"),
+        finish_reason=ModelFinishReason.STOP,
+        content="Exact token answer",
+        token_usage=TokenUsage(prompt_tokens=25, completion_tokens=25, total_tokens=50),
+    )
+    model_exact = FakeModelAdapter(responses=[dec_exact])
+    budget = RunBudgets(max_tokens=50)
+    runtime_exact = AgentRuntime(model=model_exact, budgets=budget)
+    res_exact = runtime_exact.run("Exact tokens", namespace_id=NamespaceId("ns_exact_tok"))
+
+    assert res_exact.status == RunStatus.COMPLETED
+    assert res_exact.total_tokens_consumed == 50
+    assert res_exact.final_output == "Exact token answer"
+
+    # Case B: tokens == max_tokens + 1 (51 > 50) -> BUDGET_EXHAUSTED
+    dec_over = ModelDecision(
+        decision_id="dec_over",
+        step_id=StepId("step_0"),
+        finish_reason=ModelFinishReason.STOP,
+        content="Over token answer",
+        token_usage=TokenUsage(prompt_tokens=26, completion_tokens=25, total_tokens=51),
+    )
+    model_over = FakeModelAdapter(responses=[dec_over])
+    runtime_over = AgentRuntime(model=model_over, budgets=budget)
+    res_over = runtime_over.run("Over tokens", namespace_id=NamespaceId("ns_over_tok"))
+
+    assert res_over.status == RunStatus.BUDGET_EXHAUSTED
+    assert res_over.failure_details is not None
+    assert res_over.failure_details.error_code == "BUDGET_EXCEEDED"
+
+
+def test_exact_time_budget_boundary() -> None:
+    """Exact time limit elapsed == max_time is valid; elapsed > max_time is exhausted."""
+    clock = DeterministicClock()
+    budget = RunBudgets(max_time_seconds=5.0)
+
+    # Tool advances clock by exact delay
+    delay_tool_exact = _DelayTool(clock=clock, delay_seconds=5.0)
+    step1_dec = ModelDecision(
+        decision_id="dec_1",
+        step_id=StepId("step_0"),
+        finish_reason=ModelFinishReason.TOOL_CALL,
+        tool_calls=(ToolCallRequest(call_id="c_1", tool_name="delay_tool", arguments={}),),
+        token_usage=TokenUsage(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+    )
+    step2_dec = ModelDecision(
+        decision_id="dec_2",
+        step_id=StepId("step_1"),
+        finish_reason=ModelFinishReason.STOP,
+        content="Exact time answer",
+        token_usage=TokenUsage(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+    )
+    model = FakeModelAdapter(responses=[step1_dec, step2_dec])
+    runtime = AgentRuntime(model=model, tools=[delay_tool_exact], clock=clock, budgets=budget)
+    res = runtime.run("Exact time", namespace_id=NamespaceId("ns_exact_time"))
+
+    # Exactly 5.0 seconds is valid (not > 5.0s)
+    assert res.status == RunStatus.COMPLETED
+    assert res.final_output == "Exact time answer"

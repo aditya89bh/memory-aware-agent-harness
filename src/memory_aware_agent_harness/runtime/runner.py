@@ -221,8 +221,8 @@ class AgentRuntime:
                 if cancellation_listener.abort_if_cancelled():
                     break
 
-                # Check budget exhaustion before commencing next step
-                if not budget_guard.enforce(state):
+                # Check budget exhaustion before commencing next step (pre-step check)
+                if not budget_guard.enforce_pre_step(state):
                     break
 
                 step_id, step_fsm = state.begin_step()
@@ -286,14 +286,13 @@ class AgentRuntime:
                 # Record step result into execution history
                 state.record_step_result(step_result)
 
-                # Check budget exhaustion after step completion
-                if not budget_guard.enforce(state):
+                # Check budget exhaustion after step completion (post-step check)
+                is_terminal_decision = step_result.decision.finish_reason == ModelFinishReason.STOP
+                if not budget_guard.enforce_post_step(state, is_terminal=is_terminal_decision):
                     break
 
                 # Handle model decision outcome
-                if step_result.decision.finish_reason == ModelFinishReason.STOP:
-                    if not budget_guard.enforce(state):
-                        break
+                if is_terminal_decision:
                     final_output = step_result.decision.content
                     state.complete(reason="Task completed by model")
                     break
@@ -481,7 +480,7 @@ class AgentRuntime:
 
         deadline = state.started_at + timedelta(seconds=state.budgets.max_time_seconds)
         now = state.clock.now()
-        if now >= deadline:
+        if now > deadline:
             state.exhaust_budget(reason="Time budget exceeded before model invocation")
             raise DeadlineExceededError(
                 f"Deadline exceeded for run '{state.run_id}' step '{step_id}'",
@@ -532,8 +531,8 @@ class AgentRuntime:
         state.record_tokens(eff_tokens)
 
         # Enforce budget immediately after model return (P1-H2)
-        if not budget_guard.enforce(state):
-            breach = budget_guard.evaluate_budget(state)
+        if not budget_guard.enforce_mid_step(state):
+            breach = budget_guard.evaluate_mid_step_budget(state)
             raise breach or BudgetExceededError(
                 f"Budget exceeded after model step: {state.cumulative_tokens.total_tokens} tokens",
                 budget_type="tokens",
@@ -569,7 +568,7 @@ class AgentRuntime:
 
         for call in decision.tool_calls:
             cancellation_listener.check()
-            if not budget_guard.enforce(state):
+            if not budget_guard.enforce_mid_step(state):
                 break
 
             self.event_emitter.emit(

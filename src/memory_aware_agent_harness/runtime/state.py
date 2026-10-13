@@ -152,7 +152,7 @@ class LifecycleState:
 
     def complete(self, reason: str | None = None) -> RunStatus:
         """Mark run as completed successfully, ensuring budgets were not exceeded."""
-        exhausted, exc = self.is_budget_exhausted()
+        exhausted, exc = self.is_budget_exhausted(is_terminal=True)
         if exhausted and exc is not None:
             self.failure_details = exc.to_failure_details(step_id=self.current_step_id)
             return self.exhaust_budget(reason=exc.message)
@@ -199,20 +199,45 @@ class LifecycleState:
         self.completed_at = self.clock.now()
         return status
 
-    def check_budgets(self) -> None:
+    def check_budgets(self, is_terminal: bool = False) -> None:
         """Verify all budget constraints against current execution state.
+
+        If is_terminal is True (e.g. at run completion), step budget is breached
+        only if step_count > max_steps. Otherwise (pre-step), step_count >= max_steps
+        breaches the budget. Token and time bounds are strictly enforced in both cases.
 
         Raises:
             BudgetExceededError: If step count, token consumption, or elapsed time is exceeded.
         """
-        self.budgets.check_step_budget(self.step_count)
+        if is_terminal:
+            if self.step_count > self.budgets.max_steps:
+                raise BudgetExceededError(
+                    f"Step budget exceeded: executed {self.step_count} steps, "
+                    f"max is {self.budgets.max_steps}",
+                    budget_type="steps",
+                    limit=self.budgets.max_steps,
+                    observed=self.step_count,
+                    details={
+                        "error_code": "BUDGET_EXCEEDED",
+                        "budget_type": "steps",
+                        "limit": self.budgets.max_steps,
+                        "observed": self.step_count,
+                        "recovery_hint": (
+                            "Increase RunBudgets.max_steps or decompose task into smaller sub-tasks"
+                        ),
+                    },
+                )
+        else:
+            self.budgets.check_step_budget(self.step_count)
         self.budgets.check_token_budget(self.cumulative_tokens.total_tokens)
         self.budgets.check_time_budget(self.elapsed_seconds)
 
-    def is_budget_exhausted(self) -> tuple[bool, BudgetExceededError | None]:
+    def is_budget_exhausted(
+        self, is_terminal: bool = False
+    ) -> tuple[bool, BudgetExceededError | None]:
         """Check whether any budget constraint has been breached without raising."""
         try:
-            self.check_budgets()
+            self.check_budgets(is_terminal=is_terminal)
             return False, None
         except BudgetExceededError as exc:
             return True, exc
