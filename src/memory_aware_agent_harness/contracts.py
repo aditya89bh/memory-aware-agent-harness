@@ -35,12 +35,22 @@ ToolInvocationId = NewType("ToolInvocationId", str)
 class FrozenDict(Mapping[Any, Any]):
     """Immutable, hashable mapping that is safe for pickling, deepcopy, and serialization."""
 
+    _data: dict[Any, Any]
+    _initialized: bool
+    _hash: int | None
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         if getattr(self, "_initialized", False):
             raise TypeError("FrozenDict is immutable and cannot be re-initialized")
-        self._data: dict[Any, Any] = dict(*args, **kwargs)
-        self._initialized: bool = True
-        self._hash: int | None = None
+        object.__setattr__(self, "_data", dict(*args, **kwargs))
+        object.__setattr__(self, "_initialized", True)
+        object.__setattr__(self, "_hash", None)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise TypeError("FrozenDict is immutable and attributes cannot be modified")
+
+    def __delattr__(self, name: str) -> None:
+        raise TypeError("FrozenDict is immutable and attributes cannot be deleted")
 
     def __getitem__(self, key: Any) -> Any:
         return self._data[key]
@@ -68,7 +78,7 @@ class FrozenDict(Mapping[Any, Any]):
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Mapping):
-            return self._data == dict(other)
+            return bool(self._data == dict(other))
         return False
 
     def __ne__(self, other: object) -> bool:
@@ -120,10 +130,12 @@ class FrozenDict(Mapping[Any, Any]):
         return cls(dict.fromkeys(iterable, value))
 
     def __hash__(self) -> int:
-        if self._hash is None:
+        cached = getattr(self, "_hash", None)
+        if cached is None:
             sorted_items = sorted(self._data.items(), key=lambda kv: (str(type(kv[0])), str(kv[0])))
-            self._hash = hash(tuple(sorted_items))
-        return self._hash
+            cached = hash(tuple(sorted_items))
+            object.__setattr__(self, "_hash", cached)
+        return cached
 
     def __copy__(self) -> Self:
         return self

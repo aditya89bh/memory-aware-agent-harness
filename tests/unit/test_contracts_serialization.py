@@ -836,3 +836,75 @@ def test_r2_frozendict_inherited_methods_mutation_defense() -> None:
         fd.popitem()
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
         del fd["a"]
+
+
+def test_r2_frozendict_attribute_mutation_defense() -> None:
+    """R-2 regression: FrozenDict internal storage and attributes cannot be mutated or deleted."""
+    fd = FrozenDict({"a": 1, "b": 2})
+
+    # 1. Attribute reassignment raises TypeError
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        fd._data = {}
+    target_data = "_data"
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        setattr(fd, target_data, {})
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        fd.new_attr = "val"
+    target_new = "new_attr"
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        setattr(fd, target_new, "val")
+
+    # 2. Attribute deletion raises TypeError
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        del fd._data
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        delattr(fd, target_data)
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        del fd._initialized
+    target_init = "_initialized"
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        delattr(fd, target_init)
+
+    # 3. Verify copy, deepcopy, pickle, hash, and JSON equality
+    # Copy
+    cp = copy.copy(fd)
+    assert cp is fd
+
+    # Deepcopy
+    dcp = copy.deepcopy(fd)
+    assert dcp == fd
+    assert isinstance(dcp, FrozenDict)
+
+    # Pickle
+    pickled = pickle.dumps(fd)
+    unpickled = pickle.loads(pickled)
+    assert unpickled == fd
+    assert isinstance(unpickled, FrozenDict)
+    with pytest.raises(TypeError, match="FrozenDict is immutable"):
+        unpickled._data = {}
+
+    # Hash stability
+    h1 = hash(fd)
+    h2 = hash(fd)
+    assert h1 == h2
+    assert hash(dcp) == h1
+    assert hash(unpickled) == h1
+
+    # JSON serialization via domain record
+    now = datetime(2026, 10, 12, 10, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_fd_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="FrozenDict attribute test",
+        metadata=fd,
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=now,
+        updated_at=now,
+    )
+    json_repr = rec.to_json()
+    roundtrip = MemoryRecord.from_json(json_repr)
+    assert roundtrip.metadata == fd
+    assert isinstance(roundtrip.metadata, FrozenDict)
