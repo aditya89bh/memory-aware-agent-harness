@@ -37,13 +37,13 @@ def _sanitize_pydantic_error(err: Mapping[str, Any]) -> dict[str, Any]:
     for k, v in err.items():
         if k == "ctx" and isinstance(v, Mapping):
             cleaned[k] = {str(ctx_k): str(ctx_v) for ctx_k, ctx_v in v.items()}
-        elif k == "loc" and isinstance(v, (tuple, list)):
+        elif k == "loc" and isinstance(v, tuple | list):
             cleaned[k] = [str(item) for item in v]
-        elif isinstance(v, (str, int, float, bool)) or v is None:
+        elif isinstance(v, str | int | float | bool) or v is None:
             cleaned[k] = v
-        elif isinstance(v, (tuple, list)):
+        elif isinstance(v, tuple | list):
             cleaned[k] = [
-                str(item) if not isinstance(item, (str, int, float, bool)) else item for item in v
+                str(item) if not isinstance(item, str | int | float | bool) else item for item in v
             ]
         else:
             cleaned[k] = str(v)
@@ -97,7 +97,7 @@ def validate_external_input(record_cls: type[T], data: Any) -> T:
     """
     adapter = get_adapter(record_cls)
     try:
-        if isinstance(data, (str, bytes)):
+        if isinstance(data, str | bytes):
             if isinstance(data, str) and not data.strip().startswith(("{", "[")):
                 # Handle bare strings or plain text that aren't JSON objects
                 try:

@@ -167,7 +167,7 @@ def _freeze(val: Any) -> Any:
                 raise TypeError(f"Mapping keys must be strings, got {type(k).__name__}")
             frozen_data[k] = _freeze(v)
         return FrozenDict(frozen_data)
-    if isinstance(val, (list, tuple)):
+    if isinstance(val, list | tuple):
         return tuple(_freeze(item) for item in val)
     raise TypeError(
         f"Unsupported metadata value of type {type(val).__name__}: "
@@ -178,7 +178,7 @@ def _freeze(val: Any) -> Any:
 
 def _serialize_value(val: Any) -> Any:
     """Recursively serialize complex types into JSON-compatible primitives."""
-    if val is None or isinstance(val, (str, bool, int)):
+    if val is None or isinstance(val, str | bool | int):
         return val
     if isinstance(val, float):
         if math.isnan(val) or math.isinf(val):
@@ -188,7 +188,7 @@ def _serialize_value(val: Any) -> Any:
         if val.tzinfo is None:
             raise ValueError("Datetime must be timezone-aware (tzinfo is required)")
         return val.astimezone(UTC).isoformat()
-    if isinstance(val, (StrEnum, Enum)):
+    if isinstance(val, StrEnum | Enum):
         return val.value
     if isinstance(val, CancellationToken):
         return {"is_cancelled": val.is_cancelled, "reason": val.reason}
@@ -196,9 +196,9 @@ def _serialize_value(val: Any) -> Any:
         return val.to_dict()
     if isinstance(val, Mapping):
         return {str(k): _serialize_value(v) for k, v in val.items()}
-    if isinstance(val, (list, tuple)):
+    if isinstance(val, list | tuple):
         return [_serialize_value(item) for item in val]
-    if isinstance(val, (set, frozenset)):
+    if isinstance(val, set | frozenset):
         return sorted([_serialize_value(item) for item in val])
     raise TypeError(f"Unsupported serializable value of type {type(val).__name__}")
 
@@ -459,7 +459,7 @@ class RunBudgets(SerializableRecord):
         if self.max_tokens <= 0:
             raise ValueError(f"RunBudgets.max_tokens must be > 0, got {self.max_tokens}")
         if isinstance(self.max_time_seconds, bool) or not isinstance(
-            self.max_time_seconds, (int, float)
+            self.max_time_seconds, int | float
         ):
             raise TypeError(
                 f"RunBudgets.max_time_seconds must be float, "
@@ -1422,7 +1422,7 @@ class ToolResult(SerializableRecord):
         if not self.idempotency_key.strip():
             raise ValueError("ToolResult.idempotency_key must not be empty")
         if isinstance(self.execution_time_ms, bool) or not isinstance(
-            self.execution_time_ms, (int, float)
+            self.execution_time_ms, int | float
         ):
             raise TypeError(
                 f"ToolResult.execution_time_ms must be float, "
@@ -1522,7 +1522,7 @@ class MemoryRecord(SerializableRecord):
             raise ValueError("MemoryRecord.namespace_id must not be empty")
         if not self.content.strip():
             raise ValueError("MemoryRecord.content must not be empty")
-        if isinstance(self.confidence, bool) or not isinstance(self.confidence, (int, float)):
+        if isinstance(self.confidence, bool) or not isinstance(self.confidence, int | float):
             raise TypeError(
                 f"MemoryRecord.confidence must be float, got {type(self.confidence).__name__}"
             )
@@ -1532,7 +1532,7 @@ class MemoryRecord(SerializableRecord):
             raise ValueError(
                 f"MemoryRecord.confidence must be between 0.0 and 1.0, got {self.confidence}"
             )
-        if isinstance(self.salience, bool) or not isinstance(self.salience, (int, float)):
+        if isinstance(self.salience, bool) or not isinstance(self.salience, int | float):
             raise TypeError(
                 f"MemoryRecord.salience must be float, got {type(self.salience).__name__}"
             )
@@ -1619,7 +1619,7 @@ class MemoryCandidate(SerializableRecord):
         if not str(self.source_step_id).strip():
             raise ValueError("MemoryCandidate.source_step_id must not be empty")
         if isinstance(self.proposed_salience, bool) or not isinstance(
-            self.proposed_salience, (int, float)
+            self.proposed_salience, int | float
         ):
             raise TypeError(
                 f"MemoryCandidate.proposed_salience must be float, "
@@ -1672,7 +1672,7 @@ class ContextItem(SerializableRecord):
             raise ValueError("ContextItem.memory_id must not be empty")
         if not self.content.strip():
             raise ValueError("ContextItem.content must not be empty")
-        if isinstance(self.rank_score, bool) or not isinstance(self.rank_score, (int, float)):
+        if isinstance(self.rank_score, bool) or not isinstance(self.rank_score, int | float):
             raise TypeError(
                 f"ContextItem.rank_score must be float, got {type(self.rank_score).__name__}"
             )

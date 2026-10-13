@@ -389,7 +389,7 @@ def test_structured_exceptions_expose_code_details_and_recoverable() -> None:
 
     for exc in exceptions:
         assert isinstance(exc.error_code, str) and exc.error_code
-        assert isinstance(exc.details, (Mapping, FrozenDict))
+        assert isinstance(exc.details, Mapping | FrozenDict)
         assert isinstance(exc.recoverable, bool)
 
         # FailureDetails conversion works

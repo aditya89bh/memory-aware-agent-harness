@@ -93,7 +93,7 @@ def compile_execution_prompt(
         if step.tool_results:
             for tr in step.tool_results:
                 obs_val = tr.result if tr.result is not None else tr.error
-                if isinstance(obs_val, (dict, list, Mapping)):
+                if isinstance(obs_val, dict | list | Mapping):
                     obs_str = json.dumps(obs_val, sort_keys=True, default=_json_default)
                 else:
                     obs_str = str(obs_val)
