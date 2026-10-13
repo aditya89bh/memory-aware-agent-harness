@@ -222,3 +222,158 @@ def test_bounded_execution_history_prevents_prompt_accumulation() -> None:
     assert "[Step 6]" in prompt_win3
     assert "[Step 1]" not in prompt_win3
     assert "[Step 2]" not in prompt_win3
+
+
+def test_compile_execution_prompt_bounds_200kb_observation() -> None:
+    """compile_execution_prompt bounds 200 KB tool observations to max_observation_chars."""
+    from datetime import UTC, datetime
+
+    from memory_aware_agent_harness.contracts import (
+        RunId,
+        StepId,
+        StepResult,
+        ToolCallStatus,
+        ToolInvocationId,
+        ToolResult,
+    )
+
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    huge_payload = "A" * (200 * 1024)  # 200 KB
+    tr = ToolResult(
+        invocation_id=ToolInvocationId("inv_huge"),
+        tool_name="huge_tool",
+        status=ToolCallStatus.COMPLETED,
+        side_effect=SideEffectType.READ_ONLY,
+        idempotency_key="idemp_huge",
+        result={"data": huge_payload},
+    )
+    step = StepResult(
+        step_id=StepId("step_huge"),
+        run_id=RunId("run_huge"),
+        step_number=1,
+        decision=ModelDecision(
+            decision_id="dec_h",
+            step_id=StepId("step_huge"),
+            finish_reason=ModelFinishReason.TOOL_CALL,
+        ),
+        tool_results=(tr,),
+        memories_proposed=0,
+        memories_committed=0,
+        tokens_consumed=0,
+        completed_at=now,
+    )
+
+    prompt = compile_execution_prompt("Analyze data", [step])
+    assert "... [truncated]" in prompt
+    assert len(prompt) < 10000
+    obs_line = next(line for line in prompt.splitlines() if "Observation (" in line)
+    obs_body = obs_line.split(": ", 1)[1]
+    assert obs_body.endswith("... [truncated]")
+    truncated_content = obs_body[: -len("... [truncated]")]
+    assert len(truncated_content) == 4000
+    assert "A" * 3500 in prompt
+    assert "A" * 4001 not in prompt
+
+
+def test_compile_execution_prompt_bounds_unbroken_character_string() -> None:
+    """compile_execution_prompt safely slices unbroken character strings without spaces."""
+    from datetime import UTC, datetime
+
+    from memory_aware_agent_harness.contracts import (
+        RunId,
+        StepId,
+        StepResult,
+        ToolCallStatus,
+        ToolInvocationId,
+        ToolResult,
+    )
+
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    unbroken_string = "Z" * 50000  # 50,000 unbroken characters
+    tr = ToolResult(
+        invocation_id=ToolInvocationId("inv_unbroken"),
+        tool_name="unbroken_tool",
+        status=ToolCallStatus.COMPLETED,
+        side_effect=SideEffectType.READ_ONLY,
+        idempotency_key="idemp_unbroken",
+        result={"data": unbroken_string},
+    )
+    step = StepResult(
+        step_id=StepId("step_unbroken"),
+        run_id=RunId("run_unbroken"),
+        step_number=1,
+        decision=ModelDecision(
+            decision_id="dec_u",
+            step_id=StepId("step_unbroken"),
+            finish_reason=ModelFinishReason.TOOL_CALL,
+        ),
+        tool_results=(tr,),
+        memories_proposed=0,
+        memories_committed=0,
+        tokens_consumed=0,
+        completed_at=now,
+    )
+
+    prompt = compile_execution_prompt(
+        "Unbroken string task",
+        [step],
+        max_observation_chars=200,
+    )
+    assert "... [truncated]" in prompt
+    obs_line = next(line for line in prompt.splitlines() if "Observation (" in line)
+    obs_body = obs_line.split(": ", 1)[1]
+    assert obs_body.endswith("... [truncated]")
+    truncated_content = obs_body[: -len("... [truncated]")]
+    assert len(truncated_content) == 200
+    assert "Z" * 150 in prompt
+    assert "Z" * 201 not in prompt
+
+
+def test_agent_runtime_with_200kb_observation_tool() -> None:
+    """AgentRuntime end-to-end execution handles 200 KB tool output with bounded feedback."""
+
+    class _HugeTool(ToolProtocol):
+        def __init__(self) -> None:
+            self.name = "huge_producer"
+            self.description = "Produces large payload"
+            self.side_effect = SideEffectType.READ_ONLY
+
+        def get_schema(self) -> Mapping[str, Any]:
+            return {"type": "object", "properties": {}}
+
+        def execute(
+            self, arguments: Mapping[str, Any], context: ToolCallContext
+        ) -> Mapping[str, Any]:
+            return {"data": "X" * (200 * 1024)}
+
+    step2_prompt_received: list[str] = []
+
+    def _model_handler(
+        manifest: ContextManifest,
+        tools_schema: Sequence[Mapping[str, Any]],
+        context: ModelCallContext,
+    ) -> ModelDecision:
+        if manifest.compiled_prompt and "huge_producer" in manifest.compiled_prompt:
+            step2_prompt_received.append(manifest.compiled_prompt)
+            return ModelDecision(
+                decision_id="dec_s2",
+                step_id=context.step_id,
+                finish_reason=ModelFinishReason.STOP,
+                content="Finished analyzing huge payload",
+            )
+        return ModelDecision(
+            decision_id="dec_s1",
+            step_id=context.step_id,
+            finish_reason=ModelFinishReason.TOOL_CALL,
+            tool_calls=(ToolCallRequest(call_id="c_h", tool_name="huge_producer", arguments={}),),
+        )
+
+    model = FakeModelAdapter(default_handler=_model_handler)
+    runtime = AgentRuntime(model=model, tools=[_HugeTool()])
+    res = runtime.run("Process huge output", namespace_id=NamespaceId("ns_huge"))
+
+    assert res.status == RunStatus.COMPLETED
+    assert res.step_count == 2
+    assert len(step2_prompt_received) == 1
+    assert "... [truncated]" in step2_prompt_received[0]
+    assert len(step2_prompt_received[0]) < 10000

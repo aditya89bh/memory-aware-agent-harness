@@ -69,8 +69,19 @@ def compile_execution_prompt(
     task: str,
     history: Sequence[StepResult],
     max_history_steps: int = 10,
+    max_observation_chars: int = 4000,
+    max_history_chars: int = 16000,
 ) -> str:
-    """Compile task and bounded history of prior decisions and tool observations (P1-H1)."""
+    """Compile task and bounded history of prior decisions and tool observations (P1-H1).
+
+    Enforces strict character-level bounds on individual observations (max_observation_chars)
+    and overall accumulated history text (max_history_chars) to prevent prompt explosion
+    from huge or unbroken tool outputs. Truncated observations append '... [truncated]'.
+
+    Note:
+        Full prompt fencing, boundary delimiters, and indirect prompt injection defenses
+        belong to Phase 3 (Context Compilation Engine).
+    """
     if not history:
         return task
 
@@ -81,14 +92,16 @@ def compile_execution_prompt(
 
     bounded_history = history[-max_history_steps:]
     sections: list[str] = [f"Task: {task}", "", "--- Execution History ---"]
+    history_entries: list[str] = []
+
     for step in bounded_history:
-        sections.append(f"[Step {step.step_number}]")
+        step_lines: list[str] = [f"[Step {step.step_number}]"]
         if step.decision.content:
-            sections.append(f"Model: {step.decision.content}")
+            step_lines.append(f"Model: {step.decision.content}")
         if step.decision.tool_calls:
             for tc in step.decision.tool_calls:
                 args_json = json.dumps(tc.arguments, sort_keys=True, default=_json_default)
-                sections.append(f"Action: Call {tc.tool_name} with arguments {args_json}")
+                step_lines.append(f"Action: Call {tc.tool_name} with arguments {args_json}")
         if step.tool_results:
             for tr in step.tool_results:
                 obs_val = tr.result if tr.result is not None else tr.error
@@ -96,9 +109,30 @@ def compile_execution_prompt(
                     obs_str = json.dumps(obs_val, sort_keys=True, default=_json_default)
                 else:
                     obs_str = str(obs_val)
-                sections.append(f"Observation ({tr.tool_name}, {tr.status.value}): {obs_str}")
-        sections.append("")
 
+                if len(obs_str) > max_observation_chars:
+                    obs_str = obs_str[:max_observation_chars] + "... [truncated]"
+
+                step_lines.append(f"Observation ({tr.tool_name}, {tr.status.value}): {obs_str}")
+        step_lines.append("")
+        history_entries.append("\n".join(step_lines))
+
+    # Enforce total history text character limit (max_history_chars)
+    combined_history = "\n".join(history_entries)
+    if len(combined_history) > max_history_chars:
+        accumulated: list[str] = []
+        current_len = 0
+        for entry in reversed(history_entries):
+            if current_len + len(entry) + 1 <= max_history_chars:
+                accumulated.append(entry)
+                current_len += len(entry) + 1
+            else:
+                if not accumulated:
+                    accumulated.append(entry[:max_history_chars] + "... [truncated]")
+                break
+        history_entries = list(reversed(accumulated))
+
+    sections.extend(history_entries)
     sections.append(f"--- Current Step {len(history) + 1} ---")
     sections.append("Continue executing the task based on the observations above.")
     return "\n".join(sections)
