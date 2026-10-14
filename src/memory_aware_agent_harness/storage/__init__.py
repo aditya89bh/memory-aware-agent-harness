@@ -18,6 +18,8 @@ from memory_aware_agent_harness.storage.memory_repo import (
     is_tombstoned,
     list_active_memories,
     put_memory,
+    search_memories,
+    search_memories_basic,
     tombstone_memory,
     update_memory_optimistic,
 )
@@ -88,6 +90,8 @@ __all__ = [
     "save_checkpoint",
     "save_run",
     "save_step",
+    "search_memories",
+    "search_memories_basic",
     "tombstone_memory",
     "transaction",
     "update_memory_optimistic",

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 from memory_aware_agent_harness.contracts import (
     BranchId,
     CrossNamespaceAccessError,
+    MemoryFilter,
     MemoryId,
     MemoryKind,
     MemoryOrigin,
@@ -574,3 +577,98 @@ def get_memory_lineage(
         (str(target_memory_id), str(namespace_id)),
     ).fetchall()
     return tuple(str(r["source_reference_id"]) for r in rows)
+
+
+def search_memories(
+    conn: sqlite3.Connection,
+    query_filter: MemoryFilter,
+) -> tuple[MemoryRecord, ...]:
+    """Execute scoped, multi-dimensional search returning matching records.
+
+    Filters across namespace, kinds, branch, run, origin, state, confidence,
+    salience, TTL expiration, and text content, excluding tombstoned records.
+
+    Args:
+        conn: Target SQLite connection.
+        query_filter: Scoped search criteria.
+
+    Returns:
+        Tuple of matching MemoryRecords ordered by salience and created_at.
+    """
+    clauses: list[str] = [
+        "mr.namespace_id = ?",
+        """NOT EXISTS (
+            SELECT 1 FROM tombstones t
+            WHERE t.target_memory_id = mr.memory_id
+              AND t.namespace_id = mr.namespace_id
+        )""",
+    ]
+    params: list[Any] = [str(query_filter.namespace_id)]
+
+    if query_filter.state is not None:
+        clauses.append("mr.state = ?")
+        params.append(query_filter.state.value)
+
+    if query_filter.kinds:
+        placeholders = ", ".join("?" for _ in query_filter.kinds)
+        clauses.append(f"mr.kind IN ({placeholders})")
+        params.extend(k.value for k in query_filter.kinds)
+
+    if query_filter.run_id is not None:
+        clauses.append("mr.run_id = ?")
+        params.append(str(query_filter.run_id))
+
+    if query_filter.branch_id is not None:
+        clauses.append("mr.branch_id = ?")
+        params.append(str(query_filter.branch_id))
+
+    if query_filter.origin is not None:
+        clauses.append("mr.origin = ?")
+        params.append(query_filter.origin.value)
+
+    if query_filter.min_confidence is not None:
+        clauses.append("mr.confidence >= ?")
+        params.append(query_filter.min_confidence)
+
+    if query_filter.min_salience is not None:
+        clauses.append("mr.salience >= ?")
+        params.append(query_filter.min_salience)
+
+    if query_filter.as_of is not None:
+        clauses.append("(mr.expires_at IS NULL OR mr.expires_at > ?)")
+        params.append(query_filter.as_of.astimezone(UTC).isoformat())
+
+    if query_filter.query_text and query_filter.query_text.strip():
+        clauses.append("mr.content LIKE ?")
+        params.append(f"%{query_filter.query_text.strip()}%")
+
+    params.append(query_filter.limit)
+
+    where_sql = " AND ".join(clauses)
+    sql = f"""
+    SELECT mr.* FROM memory_records mr
+    WHERE {where_sql}
+    ORDER BY mr.salience DESC, mr.created_at DESC
+    LIMIT ?;
+    """
+
+    rows = conn.execute(sql, params).fetchall()
+    return tuple(_row_to_memory_record(r) for r in rows)
+
+
+def search_memories_basic(
+    conn: sqlite3.Connection,
+    namespace_id: NamespaceId,
+    query: str,
+    kinds: Sequence[MemoryKind],
+    limit: int = 50,
+) -> tuple[MemoryRecord, ...]:
+    """Search active memories by text and categories conforming to MemoryStoreProtocol."""
+    query_filter = MemoryFilter(
+        namespace_id=namespace_id,
+        kinds=tuple(kinds),
+        query_text=query if query.strip() else None,
+        limit=limit,
+    )
+    return search_memories(conn, query_filter)
+
