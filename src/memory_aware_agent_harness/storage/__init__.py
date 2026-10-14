@@ -1,5 +1,12 @@
 """Unified SQLite WAL storage subsystem for agent harness."""
 
+from memory_aware_agent_harness.storage.checkpoints_repo import (
+    CheckpointRecord,
+    get_checkpoint,
+    get_latest_checkpoint,
+    list_checkpoints_for_run,
+    save_checkpoint,
+)
 from memory_aware_agent_harness.storage.connection import (
     StorageSettings,
     create_connection,
@@ -33,6 +40,7 @@ from memory_aware_agent_harness.storage.tools_repo import (
 
 __all__ = [
     "SCHEMA_V1_DDL",
+    "CheckpointRecord",
     "Migration",
     "MigrationError",
     "StorageSettings",
@@ -41,15 +49,19 @@ __all__ = [
     "create_connection",
     "find_invocation_by_idempotency_key",
     "find_pending_or_unknown_invocations",
+    "get_checkpoint",
     "get_current_schema_version",
+    "get_latest_checkpoint",
     "get_run",
     "get_step",
     "get_tool_invocation",
+    "list_checkpoints_for_run",
     "list_invocations_for_step",
     "list_steps_for_run",
     "mark_invocation_unknown",
     "record_tool_intent",
     "record_tool_result",
+    "save_checkpoint",
     "save_run",
     "save_step",
     "transaction",
