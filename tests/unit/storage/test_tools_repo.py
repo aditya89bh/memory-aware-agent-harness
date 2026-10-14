@@ -186,10 +186,7 @@ def test_record_tool_result_and_idempotency_lookup() -> None:
         assert found.invocation_id == inv_id
 
         # Missing idempotency key returns None
-        assert (
-            find_invocation_by_idempotency_key(conn, ns, "stripe_charge", "unknown_key")
-            is None
-        )
+        assert find_invocation_by_idempotency_key(conn, ns, "stripe_charge", "unknown_key") is None
     finally:
         conn.close()
 
@@ -422,8 +419,7 @@ def test_tools_cross_namespace_access_denied() -> None:
 
         # Querying pending for missing run returns empty tuple
         assert (
-            find_pending_or_unknown_invocations(conn, ns_alpha, run_id=RunId("missing_run"))
-            == ()
+            find_pending_or_unknown_invocations(conn, ns_alpha, run_id=RunId("missing_run")) == ()
         )
     finally:
         conn.close()

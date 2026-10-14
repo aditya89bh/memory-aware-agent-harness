@@ -85,9 +85,7 @@ def test_migration_checksum_tamper_detection() -> None:
         apply_migrations(conn)
 
         # Tamper with recorded checksum
-        conn.execute(
-            "UPDATE schema_migrations SET checksum = 'tampered_hash' WHERE version = 1;"
-        )
+        conn.execute("UPDATE schema_migrations SET checksum = 'tampered_hash' WHERE version = 1;")
 
         with pytest.raises(MigrationError, match=r"Checksum mismatch for migration version 1"):
             apply_migrations(conn)

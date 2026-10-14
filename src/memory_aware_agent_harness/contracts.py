@@ -1946,11 +1946,7 @@ class ScoredMemoryItem(SerializableRecord):
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
         rec_raw = data["record"]
-        record = (
-            rec_raw
-            if isinstance(rec_raw, MemoryRecord)
-            else MemoryRecord.from_dict(rec_raw)
-        )
+        record = rec_raw if isinstance(rec_raw, MemoryRecord) else MemoryRecord.from_dict(rec_raw)
         bd = data.get("score_breakdown", {})
         return cls(
             record=record,
@@ -1980,9 +1976,7 @@ class MemoryFilter(SerializableRecord):
             raise ValueError("MemoryFilter.namespace_id must not be empty")
 
         raw_kinds = self.kinds if self.kinds is not None else ()
-        coerced_kinds = tuple(
-            _coerce_enum(MemoryKind, k, "MemoryFilter.kinds") for k in raw_kinds
-        )
+        coerced_kinds = tuple(_coerce_enum(MemoryKind, k, "MemoryFilter.kinds") for k in raw_kinds)
         object.__setattr__(self, "kinds", coerced_kinds)
 
         if self.run_id is not None:
@@ -2056,9 +2050,7 @@ class MemoryFilter(SerializableRecord):
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
         raw_kinds = data.get("kinds", ())
-        coerced_kinds = tuple(
-            _coerce_enum(MemoryKind, k, "MemoryFilter.kinds") for k in raw_kinds
-        )
+        coerced_kinds = tuple(_coerce_enum(MemoryKind, k, "MemoryFilter.kinds") for k in raw_kinds)
         as_of_raw = data.get("as_of")
         as_of_val = _parse_dt(as_of_raw) if as_of_raw is not None else None
         state_raw = data.get("state")

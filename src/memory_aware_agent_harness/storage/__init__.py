@@ -20,6 +20,7 @@ from memory_aware_agent_harness.storage.memory_repo import (
     put_memory,
     search_memories,
     search_memories_basic,
+    search_memories_scored,
     tombstone_memory,
     update_memory_optimistic,
 )
@@ -38,6 +39,14 @@ from memory_aware_agent_harness.storage.runs_repo import (
     update_run_status,
 )
 from memory_aware_agent_harness.storage.schema import SCHEMA_V1_DDL
+from memory_aware_agent_harness.storage.scoring import (
+    WEIGHT_IMPORTANCE,
+    WEIGHT_PROVENANCE,
+    WEIGHT_RECENCY,
+    WEIGHT_RELEVANCE,
+    compute_memory_score,
+    score_and_rank_memories,
+)
 from memory_aware_agent_harness.storage.tools_repo import (
     ToolInvocationRecord,
     find_invocation_by_idempotency_key,
@@ -57,6 +66,10 @@ from memory_aware_agent_harness.storage.trace_repo import (
 
 __all__ = [
     "SCHEMA_V1_DDL",
+    "WEIGHT_IMPORTANCE",
+    "WEIGHT_PROVENANCE",
+    "WEIGHT_RECENCY",
+    "WEIGHT_RELEVANCE",
     "CheckpointRecord",
     "Migration",
     "MigrationError",
@@ -65,6 +78,7 @@ __all__ = [
     "TraceEventRecord",
     "append_trace_event",
     "apply_migrations",
+    "compute_memory_score",
     "create_connection",
     "find_invocation_by_idempotency_key",
     "find_pending_or_unknown_invocations",
@@ -90,8 +104,10 @@ __all__ = [
     "save_checkpoint",
     "save_run",
     "save_step",
+    "score_and_rank_memories",
     "search_memories",
     "search_memories_basic",
+    "search_memories_scored",
     "tombstone_memory",
     "transaction",
     "update_memory_optimistic",

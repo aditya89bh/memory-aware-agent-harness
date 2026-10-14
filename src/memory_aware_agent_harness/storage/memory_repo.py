@@ -20,10 +20,12 @@ from memory_aware_agent_harness.contracts import (
     NamespaceId,
     RecordNotFoundError,
     RunId,
+    ScoredMemoryItem,
     StorageVersionConflictError,
     TombstoneActiveError,
 )
 from memory_aware_agent_harness.storage.connection import transaction
+from memory_aware_agent_harness.storage.scoring import score_and_rank_memories
 
 
 def _row_to_memory_record(row: sqlite3.Row) -> MemoryRecord:
@@ -122,11 +124,7 @@ def put_memory(
             if record.metadata
             else None
         )
-        expires_iso = (
-            record.expires_at.astimezone(UTC).isoformat()
-            if record.expires_at
-            else None
-        )
+        expires_iso = record.expires_at.astimezone(UTC).isoformat() if record.expires_at else None
 
         conn.execute(
             """
@@ -327,11 +325,7 @@ def update_memory_optimistic(
             if record.metadata
             else None
         )
-        expires_iso = (
-            record.expires_at.astimezone(UTC).isoformat()
-            if record.expires_at
-            else None
-        )
+        expires_iso = record.expires_at.astimezone(UTC).isoformat() if record.expires_at else None
 
         cursor = conn.execute(
             """
@@ -672,3 +666,13 @@ def search_memories_basic(
     )
     return search_memories(conn, query_filter)
 
+
+def search_memories_scored(
+    conn: sqlite3.Connection,
+    query_filter: MemoryFilter,
+    *,
+    as_of: datetime | None = None,
+) -> tuple[ScoredMemoryItem, ...]:
+    """Execute scoped search and rank results with deterministic multi-factor scoring."""
+    unranked = search_memories(conn, query_filter)
+    return score_and_rank_memories(unranked, query_filter, as_of=as_of)

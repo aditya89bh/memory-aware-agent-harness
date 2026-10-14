@@ -853,6 +853,3 @@ def test_schema_version_and_deterministic_state_hash() -> None:
     # Unsupported payload type raises TypeError
     with pytest.raises(TypeError, match=r"payload must be Mapping or SerializableRecord"):
         compute_state_hash([1, 2, 3])  # type: ignore[arg-type]
-
-
-

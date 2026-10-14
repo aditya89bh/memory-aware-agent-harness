@@ -74,9 +74,7 @@ def save_run(
             if row
             else (created_at.astimezone(UTC).isoformat() if created_at else now_iso)
         )
-        eff_completed_at = (
-            completed_at.astimezone(UTC).isoformat() if completed_at else None
-        )
+        eff_completed_at = completed_at.astimezone(UTC).isoformat() if completed_at else None
 
         metadata_dict = {
             "final_output": run_result.final_output,
@@ -253,9 +251,7 @@ def save_step(
                 resource_id=str(step_result.step_id),
             )
 
-        model_decision_json = (
-            step_result.decision.to_json() if step_result.decision else None
-        )
+        model_decision_json = step_result.decision.to_json() if step_result.decision else None
         step_result_json = step_result.to_json()
         eff_started_at = (
             started_at.astimezone(UTC).isoformat()
