@@ -404,3 +404,101 @@ def test_e2e_diagnostic_events_integrity() -> None:
     tool_comp_events = collector.events_of_type(RuntimeEventType.TOOL_COMPLETED)
     assert len(tool_comp_events) == 1
     assert tool_comp_events[0].payload["status"] == "completed"
+
+
+class _SimulatedPaymentTool(ToolProtocol):
+    """Mutating payment tool executing financial transfers with side effects."""
+
+    def __init__(self, cancel_token: CancellationToken | None = None) -> None:
+        self.name = "payment_gateway"
+        self.description = "Process financial transfers"
+        self.side_effect = SideEffectType.NON_IDEMPOTENT_WRITE
+        self.cancel_token = cancel_token
+        self.invocations: list[Mapping[str, Any]] = []
+
+    def get_schema(self) -> Mapping[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "amount": {"type": "number"},
+                "recipient": {"type": "string"},
+            },
+            "required": ["amount", "recipient"],
+        }
+
+    def execute(self, arguments: Mapping[str, Any], context: ToolCallContext) -> Mapping[str, Any]:
+        self.invocations.append(dict(arguments))
+        if self.cancel_token is not None:
+            # Cancel mid-flight during payment operation
+            self.cancel_token.cancel(reason="Payment aborted by caller mid-flight")
+            context.check_cancellation()
+        return {"payment_id": "tx_999", "status": "settled"}
+
+
+def test_cancellation_during_payment_preserves_partial_history_and_uncertainty() -> None:
+    """Mid-flight cancellation of mutating tool preserves partial step, OUTCOME_UNKNOWN,
+    and token totals.
+    """
+    clock = DeterministicClock()
+    id_gen = DeterministicIdGenerator(prefix="pay_e2e")
+    token = CancellationToken()
+    payment_tool = _SimulatedPaymentTool(cancel_token=token)
+
+    decision = ModelDecision(
+        decision_id="dec_pay_1",
+        step_id=StepId("step_pay_01"),
+        finish_reason=ModelFinishReason.TOOL_CALL,
+        tool_calls=(
+            ToolCallRequest(
+                call_id="call_tx_1",
+                tool_name="payment_gateway",
+                arguments={"amount": 750.0, "recipient": "vendor_corp"},
+            ),
+        ),
+        token_usage=TokenUsage(prompt_tokens=30, completion_tokens=20, total_tokens=50),
+    )
+    model = FakeModelAdapter(responses=[decision])
+
+    runtime = AgentRuntime(
+        model=model,
+        tools=[payment_tool],
+        clock=clock,
+        id_generator=id_gen,
+    )
+
+    result = runtime.run(
+        "Transfer funds to vendor",
+        namespace_id=NamespaceId("ns_finance"),
+        cancellation_token=token,
+    )
+
+    # 1. Run terminal outcome
+    assert result.status == RunStatus.CANCELLED
+    assert result.failure_details is not None
+    assert result.failure_details.error_code == "EXECUTION_CANCELLED"
+
+    # 2. Step history reconciliation
+    assert result.step_count == 1
+    assert len(result.step_history) == 1
+    step = result.step_history[0]
+    assert step.decision.decision_id == "dec_pay_1"
+    assert step.tokens_consumed == 50
+
+    # 3. Mutating tool side-effect uncertainty preserved
+    assert len(step.tool_results) == 1
+    tool_res = step.tool_results[0]
+    assert tool_res.tool_name == "payment_gateway"
+    assert tool_res.side_effect == SideEffectType.NON_IDEMPOTENT_WRITE
+    assert tool_res.status == ToolCallStatus.OUTCOME_UNKNOWN
+    assert tool_res.failure_details is not None
+    assert tool_res.failure_details.error_code == "SIDE_EFFECT_UNCERTAIN"
+
+    # 4. Global tool results mirror step tool results
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0] == tool_res
+
+    # 5. Token accounting reconciliation: exactly 50 tokens, no double count
+    assert result.total_tokens_consumed == 50
+    assert result.token_usage is not None
+    assert result.token_usage.total_tokens == 50
+    assert result.total_tokens_consumed == sum(s.tokens_consumed for s in result.step_history)

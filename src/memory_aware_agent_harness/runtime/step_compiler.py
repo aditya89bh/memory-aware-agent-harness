@@ -37,6 +37,7 @@ class StepOutcomeCompiler:
         token_usage: TokenUsage | None = None,
         failure_details: FailureDetails | None = None,
         completed_at: datetime | None = None,
+        target_state: StepState | None = None,
     ) -> StepResult:
         """Compile execution outputs into a validated StepResult record.
 
@@ -80,7 +81,12 @@ class StepOutcomeCompiler:
         # Coordinate Step FSM transition if non-terminal
         step_fsm = self.state.current_step_fsm
         if step_fsm is not None and not step_fsm.is_terminal:
-            if failure_details is not None:
+            if target_state is not None:
+                step_fsm.transition_to(
+                    target_state,
+                    reason=failure_details.message if failure_details else "step compiled",
+                )
+            elif failure_details is not None:
                 step_fsm.transition_to(StepState.FAILED, reason=failure_details.message)
             else:
                 step_fsm.transition_to(StepState.COMPLETED, reason="step compilation completed")

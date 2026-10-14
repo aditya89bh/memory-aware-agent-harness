@@ -408,31 +408,67 @@ class AgentRuntime:
         cancellation_listener: CancellationListener,
     ) -> StepResult:
         """Execute the full 8-phase step lifecycle sequence via modular phase handlers."""
-        # Phase 1: Context retrieval
-        included_items = self._phase_1_retrieve(
-            state, step_id, step_fsm, task, cancellation_listener
-        )
+        decision: ModelDecision | None = None
+        tool_results: list[ToolResult] = []
+        try:
+            # Phase 1: Context retrieval
+            included_items = self._phase_1_retrieve(
+                state, step_id, step_fsm, task, cancellation_listener
+            )
 
-        # Phase 2: Compile context manifest with bounded history
-        manifest = self._phase_2_compile_context(
-            state, step_id, step_fsm, task, included_items, cancellation_listener
-        )
+            # Phase 2: Compile context manifest with bounded history
+            manifest = self._phase_2_compile_context(
+                state, step_id, step_fsm, task, included_items, cancellation_listener
+            )
 
-        # Phase 3: Model decision dispatch
-        decision = self._phase_3_decide(
-            state, step_id, step_fsm, manifest, budget_guard, cancellation_listener
-        )
+            # Phase 3: Model decision dispatch
+            decision = self._phase_3_decide(
+                state, step_id, step_fsm, manifest, budget_guard, cancellation_listener
+            )
 
-        # Phase 4: Tool dispatch
-        tool_results = self._phase_4_dispatch_tools(
-            state, step_id, step_fsm, decision, budget_guard, cancellation_listener
-        )
+            # Phase 4: Tool dispatch
+            self._phase_4_dispatch_tools(
+                state,
+                step_id,
+                step_fsm,
+                decision,
+                budget_guard,
+                cancellation_listener,
+                tool_results=tool_results,
+            )
 
-        # Phases 5-7: Memory extraction, commit, and checkpoint lifecycle stubs
-        self._phase_5_to_7_lifecycle_stubs(state, step_id, step_fsm, cancellation_listener)
+            # Phases 5-7: Memory extraction, commit, and checkpoint lifecycle stubs
+            self._phase_5_to_7_lifecycle_stubs(state, step_id, step_fsm, cancellation_listener)
 
-        # Phase 8: Outcome compilation
-        return self._phase_8_compile_outcome(state, step_id, decision, tool_results, step_compiler)
+            # Phase 8: Outcome compilation
+            return self._phase_8_compile_outcome(
+                state, step_id, decision, tool_results, step_compiler
+            )
+        except BaseException as exc:
+            # Preserve partial step and tool execution history on aborted/failed steps
+            if decision is not None and not any(s.step_id == step_id for s in state.step_history):
+                to_fd = getattr(exc, "to_failure_details", None)
+                fail_details = to_fd(step_id=step_id) if callable(to_fd) else None
+                if fail_details is None:
+                    fail_details = FailureDetails(
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                        step_id=step_id,
+                        error_code="STEP_ABORTED",
+                    )
+                target_state = (
+                    StepState.ABORTED
+                    if isinstance(exc, ExecutionCancelledError | PolicyViolationError)
+                    else StepState.FAILED
+                )
+                partial_step = step_compiler.compile_step(
+                    decision=decision,
+                    tool_results=tool_results,
+                    failure_details=fail_details,
+                    target_state=target_state,
+                )
+                state.record_step_result(partial_step)
+            raise
 
     def _phase_1_retrieve(
         self,
@@ -598,9 +634,10 @@ class AgentRuntime:
         decision: ModelDecision,
         budget_guard: BudgetGuard,
         cancellation_listener: CancellationListener,
+        tool_results: list[ToolResult] | None = None,
     ) -> list[ToolResult]:
         if decision.finish_reason != ModelFinishReason.TOOL_CALL and len(decision.tool_calls) == 0:
-            return []
+            return tool_results if tool_results is not None else []
 
         step_fsm.transition_to(StepState.DISPATCHING_TOOL)
         self.event_emitter.emit(
@@ -611,7 +648,8 @@ class AgentRuntime:
         )
         cancellation_listener.check()
 
-        tool_results: list[ToolResult] = []
+        if tool_results is None:
+            tool_results = []
         deadline = state.started_at + timedelta(seconds=state.budgets.max_time_seconds)
 
         for call in decision.tool_calls:
@@ -681,7 +719,41 @@ class AgentRuntime:
                         execution_time_ms=t_elapsed_ms,
                     )
                 )
-            except (ExecutionCancelledError, PolicyViolationError):
+            except (ExecutionCancelledError, PolicyViolationError) as exc:
+                t_elapsed_ms = (self.clock.now() - t_start).total_seconds() * 1000.0
+                is_mutating = tool.side_effect in (
+                    SideEffectType.IDEMPOTENT_WRITE,
+                    SideEffectType.NON_IDEMPOTENT_WRITE,
+                )
+                if is_mutating:
+                    fail_details = FailureDetails(
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                        step_id=step_id,
+                        error_code="SIDE_EFFECT_UNCERTAIN",
+                    )
+                    tool_results.append(
+                        ToolResult(
+                            invocation_id=inv_id,
+                            tool_name=call.tool_name,
+                            status=ToolCallStatus.OUTCOME_UNKNOWN,
+                            side_effect=tool.side_effect,
+                            idempotency_key=f"idemp_{inv_id}",
+                            error=str(exc),
+                            failure_details=fail_details,
+                            execution_time_ms=t_elapsed_ms,
+                        )
+                    )
+                    self.event_emitter.emit(
+                        RuntimeEventType.TOOL_COMPLETED,
+                        run_id=state.run_id,
+                        step_id=step_id,
+                        phase=StepState.DISPATCHING_TOOL,
+                        payload={
+                            "tool_name": call.tool_name,
+                            "status": str(ToolCallStatus.OUTCOME_UNKNOWN),
+                        },
+                    )
                 raise
             except Exception as exc:
                 t_elapsed_ms = (self.clock.now() - t_start).total_seconds() * 1000.0
