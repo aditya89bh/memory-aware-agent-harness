@@ -113,29 +113,42 @@ Targeted remediation following independent review findings (P1-H1, P1-H2, P1-M1 
 - 64. `65e3158`: `feat(runtime): feed tool observations, enforce strict budgets, and refactor step loop (P1-H1, P1-H2, P1-M1, P1-M2)`
 - 65. `de2fd44`: `fix(events): ensure strict diagnostic listener failure consistency (P1-M5)`
 - 66. `617f5d5`: `build(ci): pin Ruff 0.9.9 and verify wheel-installed testing (M-06, M-07, M-11)`
-- 67. `HEAD`: `docs(remediation): reconcile Phase 1 audit findings, cancellation limits, and roadmap milestone ownership (P1-M3, P1-M6)`
+- 67. `ce3dc2d`: `docs(remediation): reconcile Phase 1 audit findings, cancellation limits, and roadmap milestone ownership (P1-M3, P1-M6)`
+
+### 2.5.2 Phase 1 Final Targeted Remediation Commits (Commits 68 to 77)
+Final targeted remediation addressing independent reproduction of Priority 0 blocking issues and Priority 1 runtime correctness requirements:
+- 68. `6d37c97`: `chore(lint): resolve UP038 isinstance union errors for Ruff 0.9.9` (pinned exact Ruff 0.9.9 across repository)
+- 69. `b61c390`: `build(packaging): raise minimum setuptools to >=77 and test setuptools 77.0.3` (verified builds with setuptools 77.0.3)
+- 70. `d967e34`: `fix(runtime): separate pre-step and post-step budget enforcement (P1-H2)` (step budget boundary fix; exact limits valid)
+- 71. `fc5b285`: `fix(contracts): seal FrozenDict internal storage against attribute mutation` (sealed __setattr__ and __delattr__)
+- 72. `a59eac7`: `fix(runtime): derive execution timing from clock double for reproducible replay` (deterministic timing from ClockPort)
+- 73. `3bcf27b`: `feat(runtime): enforce character-bounded observation window in prompt compiler` (bounded 4K observation / 16K history)
+- 74. `23fac15`: `fix(cli): derive calculation output strictly from observation without hardcoded fallback` (removed "42" fallback)
+- 75. `84689d1`: `fix(runtime): reject non-string namespace_id and propagate strict termination errors` (typed boundary validation)
+- 76. `3265f25`: `feat(runtime): preserve partial step and tool execution history on aborted steps` (side effect uncertainty & token reconciliation)
+- 77. `HEAD`: `docs(remediation): reconcile final Phase 1 audit findings and verified evidence` (documentation & evidence reconciliation)
 
 ### 2.6 Deferred Findings & Future Phase Traceability
 All runtime implementation requirements and findings deferred from Phase 0 and Phase 1 are strictly tracked against their scheduled implementation phases:
 - **Phase 1 (Core Runtime & Lifecycle) — COMPLETE (Baseline at `v0.1.0.dev0`):**
-  - **P1-H1:** Bounded structured execution history prompt compilation feeding prior model decisions and tool observations back to subsequent model calls (RESOLVED).
-  - **P1-H2:** Strict token and time budget bounds enforcement before/after calls; 100x and wall-clock overruns halt with `BUDGET_EXHAUSTED`, never `COMPLETED`; deadlines passed through contexts (RESOLVED).
+  - **P1-H1:** Bounded structured execution history prompt compilation feeding prior model decisions and tool observations back to subsequent model calls; character-bounded observation window (`max_observation_chars=4000`, `max_history_chars=16000`) truncating oversized entries with `"... [truncated]"` (RESOLVED).
+  - **P1-H2:** Strict token and time budget bounds enforcement before/after calls; pre-step and post-step semantics separated (`max_steps=1` with STOP completes, nonterminal decisions on final step exhaust budget); exact limits remain valid; 100x and wall-clock overruns halt with `BUDGET_EXHAUSTED`, never `COMPLETED`; deadlines passed through contexts (RESOLVED).
   - **P1-M1:** Immediate token recording upon model return across all execution branches including errors (RESOLVED).
-  - **P1-M2:** Mutating tool failure records `OUTCOME_UNKNOWN` with side-effect uncertainty; `RunResult` exposes `step_history` and `tool_results` summaries (RESOLVED).
+  - **P1-M2:** Mutating tool failure records `OUTCOME_UNKNOWN` with side-effect uncertainty (`SIDE_EFFECT_UNCERTAIN`); partial step history and `tool_results` summaries preserved upon cancellation or failure (RESOLVED).
   - **P1-M3:** Cooperative cancellation limitations explicitly documented: cancellation is evaluated at phase/checkpoint boundaries and adapter polling; uninterruptible blocking I/O cannot be pre-empted until control yields back to Python (RESOLVED).
-  - **P1-M4:** Pre-execution validation of task, namespace, budgets, cancellation tokens, and duplicate tool names (RESOLVED).
-  - **P1-M5:** Diagnostic listener error consistency: strict mode raises `DiagnosticListenerError` and guarantees callers receive a structured terminal `RunResult` (RESOLVED).
+  - **P1-M4:** Pre-execution validation of task, namespace (`str` type checked), budgets, cancellation tokens, and duplicate tool names (RESOLVED).
+  - **P1-M5:** Diagnostic listener error consistency: strict mode raises `DiagnosticListenerError` and guarantees callers receive a structured terminal `RunResult`; listener failures on `RUN_TERMINATED` logged at `ERROR` level rather than silently swallowed (RESOLVED).
   - **P1-M6:** Milestone ownership corrected: Phase 1 is `v0.1.0.dev0` baseline; Phase 5 owns `v0.1.0 (Core Lifecycle MVP)` (RESOLVED).
   - **R-1:** Metadata round-trip validation and normalization across nested structures (RESOLVED).
-  - **R-2:** Deep immutability hardening for `FrozenDict` via `collections.abc.Mapping` encapsulation (RESOLVED).
+  - **R-2:** Deep immutability hardening for `FrozenDict` via `collections.abc.Mapping` encapsulation, with internal storage sealed against attribute mutation/deletion via `__setattr__` and `__delattr__` (RESOLVED).
   - **R-3:** Live cooperative cancellation signaling via `threading.Event` and abort dispatch (RESOLVED).
-  - **R-4:** Monotonic token accounting and mandatory failure detail enforcement (RESOLVED).
+  - **R-4:** Monotonic token accounting and mandatory failure detail enforcement across complete and partial steps (RESOLVED).
   - **M-03:** Runtime input validation, enum coercion, and Pydantic v2 boundary validation (RESOLVED).
-  - **M-06:** Pinned Ruff linter version (`0.9.9`) across CI, development dependencies, and pre-commit (RESOLVED).
-  - **M-07:** Substantive test coverage gate ($\ge 85\%$ branch coverage enforced across all modules) and wheel-installed testing in CI (RESOLVED).
-  - **M-11:** Setuptools packaging compatibility matrix (`setuptools>=70.0.0`, `wheel>=0.40.0`), isolated and no-isolation builds, and runnable entrypoint (RESOLVED).
+  - **M-06:** Pinned Ruff linter version (`0.9.9`) across CI, development dependencies, and pre-commit; zero UP038 union lint errors (RESOLVED).
+  - **M-07:** Substantive test coverage gate ($\ge 85\%$ branch coverage enforced across all modules, currently 88.73% with 200 passed tests) and wheel-installed testing in CI (RESOLVED).
+  - **M-11:** Setuptools packaging compatibility matrix (`setuptools>=77.0.0`, verified with `setuptools==77.0.3`, `wheel>=0.40.0`), isolated and no-isolation builds, and runnable entrypoint (RESOLVED).
   - **H-02:** Runtime FSM execution engine, step lifecycle execution, transition validation, `RunBudgets` enforcement, orphaned-run recovery, and cancellation/timeout handling (RESOLVED).
-  - **Architectural Scope Boundaries:** Step loop phases 5–7 (memory extraction, memory commit, and durable checkpointing) are structured architectural extension points with lifecycle events, not implemented persistence; orphaned-run recovery is in-process memory state reconciliation (persistent SQLite recovery scheduled for Phase 2).
+  - **Architectural Scope Boundaries:** Step loop phases 5–7 (memory extraction, memory commit, and durable checkpointing) are structured architectural extension points with lifecycle events, not implemented persistence; orphaned-run recovery is in-process memory state reconciliation (persistent SQLite recovery scheduled for Phase 2). Prompt fencing delimiters belong to Phase 3 Context Compilation Engine.
 - **Phase 2 (Memory Model & Storage Abstractions):**
   - **M-04:** Scored retrieval and deterministic storage interfaces (`MemoryStoreProtocol` scoring, deterministic time, versioning, and lifecycle operations).
   - **M-05:** Storage scoping across run, branch, namespace, and provenance (`namespace_id`, `run_id`, `branch_id`, and `origin` scoping; direct `namespace_id` columns on child tables `checkpoints` and `trace_events`).

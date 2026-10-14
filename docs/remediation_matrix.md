@@ -101,12 +101,20 @@ Every independent review finding is classified into one of three explicit status
 
 ## 8. Verification Suite Summary
 
-- **Total Unit, Integration & Failure Tests:** 185 passed in 0.60s (100% pass rate).
-- **Code Coverage:** Total branch coverage is **88.89%** (enforced quality threshold $\ge 85\%$).
+- **Total Unit, Integration & Failure Tests:** 200 passed in 0.61s (100% pass rate).
+- **Code Coverage:** Total branch coverage is **88.73%** (enforced quality threshold $\ge 85\%$).
 - **Static Type Checking:** Strict Mypy passes with zero warnings or errors across 49 source files.
-- **Code Formatting & Linting:** Ruff check passes (0 errors); Ruff format passes (49 files formatted, pinned exact `0.9.9`).
-- **Package Build:** `python -m build` (isolated) and `python -m build --no-isolation` generate `.tar.gz` and `.whl` cleanly (`setuptools>=70.0.0`, `wheel>=0.40.0`).
+- **Code Formatting & Linting:** Ruff check passes (0 errors, pinned exact `0.9.9`, all UP038 union issues resolved); Ruff format passes (49 files formatted).
+- **Package Build:** `python -m build` (isolated) and `python -m build --no-isolation` generate `.tar.gz` and `.whl` cleanly (`setuptools>=77.0.0`, verified with `setuptools==77.0.3`, `wheel>=0.40.0`).
 - **Wheel Installation Smoke Test:** Verifies importability, contracts, test doubles, `py.typed`, and executes complete test suite against installed wheel in isolated virtual environments.
 - **Scope & Governance:** Functioning core single-agent runtime implemented with strictly zero Phase 2+ leakage; all commits authored by `Aditya bhatia <aditya89bh@gmail.com>` with zero AI trailers.
-- **Architectural Scope Limitations Documented:** Memory extraction, commit, and durable checkpointing are step lifecycle extension points with events; in-process orphaned run recovery documented.
+- **Targeted Remediation Invariants Verified:**
+  1. *Step-budget lifecycle:* Pre-step and post-step budget semantics explicitly separated. `max_steps=1` with STOP yields `COMPLETED`; nonterminal decisions on the final permitted step yield `BUDGET_EXHAUSTED`. Exact token and time limits remain valid. Final `StepResult` and `final_output` are never discarded on completion.
+  2. *FrozenDict immutability:* Internal storage sealed against attribute mutation/deletion via `__setattr__` and `__delattr__`, raising explicit `TypeError`.
+  3. *Deterministic replay:* Execution timing derived strictly from injectable `ClockPort` double rather than non-deterministic `time.perf_counter()`.
+  4. *Prompt compilation bounds:* Observation window character-bounded (`max_observation_chars=4000`, `max_history_chars=16000`), truncating oversized observations and history with `"... [truncated]"`.
+  5. *Derivation without fallback:* CLI calculator fallback `"42"` removed; output derived strictly from successful observation or returns structured `TOOL_OBSERVATION_FAILED`.
+  6. *Boundary validation:* Non-string `namespace_id` rejected with `TypeError`; deadline pre-invocation checks covered; `RUN_TERMINATED` listener failures logged at `ERROR` level without being silently swallowed.
+  7. *Partial history preservation:* Completed decisions and tool executions preserved upon cancellation or failure; mutating tools interrupted in-flight record `ToolCallStatus.OUTCOME_UNKNOWN` with `SIDE_EFFECT_UNCERTAIN`. Token accounting reconciles without double counts.
+- **Architectural Scope Limitations Documented:** Memory extraction, commit, and durable checkpointing are step lifecycle extension points with events; in-process orphaned run recovery documented. Prompt fencing delimiters belong to Phase 3 Context Compilation Engine.
 
