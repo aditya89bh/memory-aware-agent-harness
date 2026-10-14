@@ -20,18 +20,36 @@ from memory_aware_agent_harness.storage.runs_repo import (
     update_run_status,
 )
 from memory_aware_agent_harness.storage.schema import SCHEMA_V1_DDL
+from memory_aware_agent_harness.storage.tools_repo import (
+    ToolInvocationRecord,
+    find_invocation_by_idempotency_key,
+    find_pending_or_unknown_invocations,
+    get_tool_invocation,
+    list_invocations_for_step,
+    mark_invocation_unknown,
+    record_tool_intent,
+    record_tool_result,
+)
 
 __all__ = [
     "SCHEMA_V1_DDL",
     "Migration",
     "MigrationError",
     "StorageSettings",
+    "ToolInvocationRecord",
     "apply_migrations",
     "create_connection",
+    "find_invocation_by_idempotency_key",
+    "find_pending_or_unknown_invocations",
     "get_current_schema_version",
     "get_run",
     "get_step",
+    "get_tool_invocation",
+    "list_invocations_for_step",
     "list_steps_for_run",
+    "mark_invocation_unknown",
+    "record_tool_intent",
+    "record_tool_result",
     "save_run",
     "save_step",
     "transaction",
