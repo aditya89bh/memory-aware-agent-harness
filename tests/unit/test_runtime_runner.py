@@ -16,11 +16,17 @@ from memory_aware_agent_harness.contracts import (
     RunId,
     RunStatus,
     StepId,
+    StepState,
     TokenUsage,
     ToolProtocol,
 )
 from memory_aware_agent_harness.doubles import DeterministicClock, DeterministicIdGenerator
 from memory_aware_agent_harness.runtime.adapters import FakeModelAdapter
+from memory_aware_agent_harness.runtime.events import (
+    RuntimeEvent,
+    RuntimeEventListener,
+    RuntimeEventType,
+)
 from memory_aware_agent_harness.runtime.runner import AgentRuntime
 
 
@@ -177,9 +183,20 @@ def test_agent_runtime_pre_execution_validation() -> None:
     with pytest.raises(ValueError, match="Namespace ID must not be empty or whitespace"):
         runtime.run("Valid task", namespace_id=NamespaceId("   \t  "))
 
+    # 4b. Reject non-string namespace_id
+    with pytest.raises(TypeError, match="Namespace ID must be str"):
+        runtime.run("Valid task", namespace_id=123)  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="Namespace ID must be str"):
+        runtime.run("Valid task", namespace_id=None)  # type: ignore[arg-type]
+
     # 5. Reject empty or whitespace run_id
     with pytest.raises(ValueError, match="Run ID must not be empty or whitespace"):
         runtime.run("Valid task", namespace_id=NamespaceId("ns_01"), run_id=RunId("   "))
+
+    # 5b. Reject non-string run_id
+    with pytest.raises(TypeError, match="Run ID must be str"):
+        runtime.run("Valid task", namespace_id=NamespaceId("ns_01"), run_id=123)  # type: ignore[arg-type]
 
     # 6. Reject invalid budgets in run()
     with pytest.raises(TypeError, match="budgets must be an instance of RunBudgets"):
@@ -265,3 +282,61 @@ def test_agent_runtime_deterministic_replay_produces_identical_json() -> None:
     json_run2 = run_scenario()
 
     assert json_run1 == json_run2
+
+
+def test_agent_runtime_deadline_before_model_invocation() -> None:
+    """Deadline exceeded before model invocation triggers BUDGET_EXHAUSTED."""
+    from datetime import UTC, datetime
+
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    clock = DeterministicClock(start_time=t0)
+
+    class TimeAdvancingListener(RuntimeEventListener):
+        def on_event(self, event: RuntimeEvent) -> None:
+            # Advance clock past max_time_seconds when phase transition to DECIDING happens
+            if (
+                event.event_type == RuntimeEventType.PHASE_TRANSITION
+                and event.phase == StepState.DECIDING
+            ):
+                clock.advance(10.0)
+
+    runtime = AgentRuntime(
+        model=FakeModelAdapter(),
+        clock=clock,
+        budgets=RunBudgets(max_time_seconds=5.0),
+        event_listeners=[TimeAdvancingListener()],
+    )
+
+    result = runtime.run("Task that times out before model", namespace_id=NamespaceId("ns_timeout"))
+
+    assert result.status == RunStatus.BUDGET_EXHAUSTED
+    assert result.failure_details is not None
+    assert result.failure_details.error_code == "DEADLINE_EXCEEDED"
+    assert "Deadline exceeded" in result.failure_details.message
+
+
+def test_strict_diagnostic_listener_on_run_terminated_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Strict diagnostic listener failure on RUN_TERMINATED is logged and not silently swallowed."""
+    import logging
+
+    class FailingTerminatedListener(RuntimeEventListener):
+        def on_event(self, event: RuntimeEvent) -> None:
+            if event.event_type == RuntimeEventType.RUN_TERMINATED:
+                raise RuntimeError("Terminated listener boom")
+
+    runtime = AgentRuntime(
+        model=FakeModelAdapter(),
+        event_listeners=[FailingTerminatedListener()],
+        strict_diagnostics=True,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        result = runtime.run("Task with failing listener", namespace_id=NamespaceId("ns_log"))
+
+    assert result.status == RunStatus.COMPLETED
+    assert any(
+        "Diagnostic listener error during RUN_TERMINATED dispatch" in record.message
+        for record in caplog.records
+    )

@@ -7,6 +7,7 @@ model decision dispatching, 8-phase step lifecycle execution, and canonical resu
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import Any
@@ -63,6 +64,8 @@ from memory_aware_agent_harness.runtime.state import (
     SystemIdGenerator,
 )
 from memory_aware_agent_harness.runtime.step_compiler import StepOutcomeCompiler
+
+logger = logging.getLogger(__name__)
 
 
 def compile_execution_prompt(
@@ -208,10 +211,15 @@ class AgentRuntime:
         """
         if not isinstance(task, str) or not task.strip():
             raise ValueError("Task description must not be empty or whitespace")
-        if not namespace_id or not str(namespace_id).strip():
+        if not isinstance(namespace_id, str):
+            raise TypeError(f"Namespace ID must be str, got {type(namespace_id).__name__}")
+        if not namespace_id.strip():
             raise ValueError("Namespace ID must not be empty or whitespace")
-        if run_id is not None and not str(run_id).strip():
-            raise ValueError("Run ID must not be empty or whitespace")
+        if run_id is not None:
+            if not isinstance(run_id, str):
+                raise TypeError(f"Run ID must be str, got {type(run_id).__name__}")
+            if not run_id.strip():
+                raise ValueError("Run ID must not be empty or whitespace")
         if budgets is not None and not isinstance(budgets, RunBudgets):
             raise TypeError(
                 f"budgets must be an instance of RunBudgets, got {type(budgets).__name__}"
@@ -368,6 +376,10 @@ class AgentRuntime:
                 state.fail(exc.to_failure_details(step_id=state.current_step_id), reason=str(exc))
             elif state.failure_details is None and state.status != RunStatus.COMPLETED:
                 state.failure_details = exc.to_failure_details(step_id=state.current_step_id)
+            logger.error(
+                "Diagnostic listener error during RUN_TERMINATED dispatch: %s",
+                exc,
+            )
         except Exception as exc:
             if not state.is_terminal:
                 state.fail(
@@ -379,6 +391,10 @@ class AgentRuntime:
                     ),
                     reason=str(exc),
                 )
+            logger.error(
+                "Unexpected error during RUN_TERMINATED dispatch: %s",
+                exc,
+            )
         return result_builder.build(final_output=final_output)
 
     def _execute_step(
@@ -514,7 +530,6 @@ class AgentRuntime:
         deadline = state.started_at + timedelta(seconds=state.budgets.max_time_seconds)
         now = state.clock.now()
         if now > deadline:
-            state.exhaust_budget(reason="Time budget exceeded before model invocation")
             raise DeadlineExceededError(
                 f"Deadline exceeded for run '{state.run_id}' step '{step_id}'",
                 deadline=deadline,
