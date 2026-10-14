@@ -361,6 +361,14 @@ class AgentRuntime:
                 )
                 state.fail(failure, reason=str(exc))
 
+        # Dispatch terminal lifecycle event (RUN_TERMINATED).
+        # Contract (P1-M5, P2-04):
+        # - In strict mode, if a listener fails during RUN_TERMINATED:
+        #   * If the run is not yet terminal, it transitions to FAILED
+        #     with DIAGNOSTIC_LISTENER_FAILURE.
+        #   * If the run is already COMPLETED (or terminal), the valid terminal
+        #     outcome is preserved without being retroactively corrupted;
+        #     the listener error is logged at ERROR level.
         try:
             self.event_emitter.emit(
                 RuntimeEventType.RUN_TERMINATED,
