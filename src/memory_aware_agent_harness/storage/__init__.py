@@ -52,6 +52,13 @@ from memory_aware_agent_harness.storage.scoring import (
     compute_memory_score,
     score_and_rank_memories,
 )
+from memory_aware_agent_harness.storage.step_commit import (
+    LineageEntry,
+    StepCommitBundle,
+    StepCommitOutcome,
+    commit_step_4phase,
+    commit_step_transaction,
+)
 from memory_aware_agent_harness.storage.tools_repo import (
     ToolInvocationRecord,
     find_invocation_by_idempotency_key,
@@ -76,13 +83,18 @@ __all__ = [
     "WEIGHT_RECENCY",
     "WEIGHT_RELEVANCE",
     "CheckpointRecord",
+    "LineageEntry",
     "Migration",
     "MigrationError",
+    "StepCommitBundle",
+    "StepCommitOutcome",
     "StorageSettings",
     "ToolInvocationRecord",
     "TraceEventRecord",
     "append_trace_event",
     "apply_migrations",
+    "commit_step_4phase",
+    "commit_step_transaction",
     "compute_memory_score",
     "create_connection",
     "find_invocation_by_idempotency_key",

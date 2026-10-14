@@ -1038,6 +1038,42 @@ class TombstoneActiveError(StorageError):
         self.tombstone_id = tombstone_id
 
 
+class StepCommitError(StorageError):
+    """Raised when the atomic 4-phase step commit protocol fails and rolls back."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str,
+        step_id: str,
+        run_id: str,
+        namespace_id: str,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        d["phase"] = phase
+        d["step_id"] = step_id
+        d["run_id"] = run_id
+        d["namespace_id"] = namespace_id
+        super().__init__(
+            message,
+            operation="atomic_step_commit",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.error_code = "STEP_COMMIT_FAILED"
+        self.phase = phase
+        self.step_id = step_id
+        self.run_id = run_id
+        self.namespace_id = namespace_id
+
+
 class ExecutionCancelledError(HarnessError):
     """Raised when execution has been explicitly cancelled."""
 
@@ -2724,6 +2760,7 @@ __all__ = [
     "ScoredMemoryItem",
     "SerializableRecord",
     "SideEffectType",
+    "StepCommitError",
     "StepId",
     "StepResult",
     "StepState",
