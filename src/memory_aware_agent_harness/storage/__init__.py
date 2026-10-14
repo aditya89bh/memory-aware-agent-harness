@@ -11,6 +11,14 @@ from memory_aware_agent_harness.storage.migrations import (
     apply_migrations,
     get_current_schema_version,
 )
+from memory_aware_agent_harness.storage.runs_repo import (
+    get_run,
+    get_step,
+    list_steps_for_run,
+    save_run,
+    save_step,
+    update_run_status,
+)
 from memory_aware_agent_harness.storage.schema import SCHEMA_V1_DDL
 
 __all__ = [
@@ -21,5 +29,11 @@ __all__ = [
     "apply_migrations",
     "create_connection",
     "get_current_schema_version",
+    "get_run",
+    "get_step",
+    "list_steps_for_run",
+    "save_run",
+    "save_step",
     "transaction",
+    "update_run_status",
 ]
