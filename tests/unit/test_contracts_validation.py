@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from memory_aware_agent_harness.contracts import (
+    SCHEMA_VERSION,
     BranchId,
     CandidateStatus,
     CheckpointId,
@@ -28,6 +29,7 @@ from memory_aware_agent_harness.contracts import (
     ModelFinishReason,
     NamespaceId,
     RecordNotFoundError,
+    ReplayDivergenceError,
     RunBudgets,
     RunId,
     RunResult,
@@ -44,6 +46,8 @@ from memory_aware_agent_harness.contracts import (
     ToolCallStatus,
     ToolInvocationId,
     ToolResult,
+    compute_state_hash,
+    verify_state_hash,
 )
 from memory_aware_agent_harness.validation import (
     BoundaryValidationError,
@@ -801,5 +805,54 @@ def test_storage_boundary_validation_adapters() -> None:
 
     with pytest.raises(BoundaryValidationError):
         validate_scored_memory_item({"record": "bad", "score": "not_num"})
+
+
+def test_schema_version_and_deterministic_state_hash() -> None:
+    """Deterministic state hashing computes canonical SHA-256 and verifies replay match."""
+    assert SCHEMA_VERSION == 1
+
+    payload_a = {"b": 2, "a": 1, "nested": {"y": "yes", "x": "ex"}}
+    payload_b = {"nested": {"x": "ex", "y": "yes"}, "a": 1, "b": 2}
+
+    # Order invariance due to canonical JSON key sorting
+    hash_a = compute_state_hash(payload_a)
+    hash_b = compute_state_hash(payload_b)
+    assert hash_a == hash_b
+    assert len(hash_a) == 64
+
+    # SerializableRecord hashing
+    now = datetime(2026, 10, 14, 12, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_hash_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="Important fact",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=now,
+        updated_at=now,
+    )
+    rec_hash = compute_state_hash(rec)
+    assert len(rec_hash) == 64
+
+    # Verification passes on identical payload
+    assert verify_state_hash(rec, rec_hash) is True
+    assert verify_state_hash(payload_a, hash_a) is True
+
+    # Verification divergence raises ReplayDivergenceError by default
+    bogus_hash = "0" * 64
+    with pytest.raises(ReplayDivergenceError) as exc_info:
+        verify_state_hash(payload_a, bogus_hash)
+    assert exc_info.value.expected_hash == bogus_hash
+    assert exc_info.value.actual_hash == hash_a
+
+    # Verification divergence returns False when raise_on_divergence is False
+    assert verify_state_hash(payload_a, bogus_hash, raise_on_divergence=False) is False
+
+    # Unsupported payload type raises TypeError
+    with pytest.raises(TypeError, match=r"payload must be Mapping or SerializableRecord"):
+        compute_state_hash([1, 2, 3])  # type: ignore[arg-type]
+
 
 

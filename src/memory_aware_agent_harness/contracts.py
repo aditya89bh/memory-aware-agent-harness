@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import json
 import math
 import threading
@@ -1152,6 +1153,54 @@ class DiagnosticListenerError(HarnessError, RuntimeError):
         self.listener_name = listener_name
         self.event_type = event_type
         self.original_exc = original_exc
+
+
+# --- Schema Versioning and State Hash Contracts ---
+SCHEMA_VERSION: int = 1
+
+
+def compute_state_hash(payload: Mapping[str, Any] | SerializableRecord) -> str:
+    """Compute deterministic SHA-256 state hash across canonical JSON serialization."""
+    if isinstance(payload, SerializableRecord):
+        canonical_str = payload.to_json()
+    elif isinstance(payload, Mapping):
+        serialized = _serialize_value(payload)
+        canonical_str = json.dumps(
+            serialized,
+            indent=None,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+    else:
+        raise TypeError(
+            f"payload must be Mapping or SerializableRecord, got {type(payload).__name__}"
+        )
+    return hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
+
+
+def verify_state_hash(
+    payload: Mapping[str, Any] | SerializableRecord,
+    expected_hash: str,
+    *,
+    raise_on_divergence: bool = True,
+) -> bool:
+    """Verify payload state hash against expected hash, optionally raising ReplayDivergenceError."""
+    actual_hash = compute_state_hash(payload)
+    if actual_hash == expected_hash:
+        return True
+    if raise_on_divergence:
+        raise ReplayDivergenceError(
+            f"State hash divergence: expected {expected_hash}, got {actual_hash}",
+            expected_hash=expected_hash,
+            actual_hash=actual_hash,
+            details={
+                "error_code": "REPLAY_DIVERGENCE",
+                "expected_hash": expected_hash,
+                "actual_hash": actual_hash,
+            },
+        )
+    return False
 
 
 class CancellationToken:
@@ -2580,6 +2629,7 @@ class ToolProtocol(Protocol):
 __all__ = [
     "LEGAL_RUN_TRANSITIONS",
     "LEGAL_STEP_TRANSITIONS",
+    "SCHEMA_VERSION",
     "BranchId",
     "BudgetExceededError",
     "CancellationToken",
@@ -2637,4 +2687,6 @@ __all__ = [
     "ToolInvocationId",
     "ToolProtocol",
     "ToolResult",
+    "compute_state_hash",
+    "verify_state_hash",
 ]
