@@ -37,6 +37,12 @@ from memory_aware_agent_harness.storage.tools_repo import (
     record_tool_intent,
     record_tool_result,
 )
+from memory_aware_agent_harness.storage.trace_repo import (
+    TraceEventRecord,
+    append_trace_event,
+    get_trace_event,
+    get_trace_events,
+)
 
 __all__ = [
     "SCHEMA_V1_DDL",
@@ -45,6 +51,8 @@ __all__ = [
     "MigrationError",
     "StorageSettings",
     "ToolInvocationRecord",
+    "TraceEventRecord",
+    "append_trace_event",
     "apply_migrations",
     "create_connection",
     "find_invocation_by_idempotency_key",
@@ -55,6 +63,8 @@ __all__ = [
     "get_run",
     "get_step",
     "get_tool_invocation",
+    "get_trace_event",
+    "get_trace_events",
     "list_checkpoints_for_run",
     "list_invocations_for_step",
     "list_steps_for_run",
