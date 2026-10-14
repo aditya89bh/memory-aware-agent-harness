@@ -41,6 +41,18 @@ def _attempt_setitem(target: Any, key: Any, val: Any) -> None:
     target[key] = val
 
 
+def _attempt_delitem(target: Any, key: Any) -> None:
+    del target[key]
+
+
+def _attempt_setattr(target: Any, attr: str, val: Any) -> None:
+    setattr(target, attr, val)
+
+
+def _attempt_delattr(target: Any, attr: str) -> None:
+    delattr(target, attr)
+
+
 def test_tool_call_request_alias_mutation_defense() -> None:
     """Modifying arguments dict after passing it to ToolCallRequest does not mutate record."""
     raw_args: dict[str, Any] = {"nested": {"key": "original_val"}, "list_key": [1, 2, 3]}
@@ -844,23 +856,23 @@ def test_r2_frozendict_attribute_mutation_defense() -> None:
 
     # 1. Attribute reassignment raises TypeError
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
-        fd._data = {}
+        _attempt_setattr(fd, "_data", {})
     target_data = "_data"
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
         setattr(fd, target_data, {})
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
-        fd.new_attr = "val"
+        _attempt_setattr(fd, "new_attr", "val")
     target_new = "new_attr"
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
         setattr(fd, target_new, "val")
 
     # 2. Attribute deletion raises TypeError
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
-        del fd._data
+        _attempt_delattr(fd, "_data")
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
         delattr(fd, target_data)
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
-        del fd._initialized
+        _attempt_delattr(fd, "_initialized")
     target_init = "_initialized"
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
         delattr(fd, target_init)
@@ -881,7 +893,7 @@ def test_r2_frozendict_attribute_mutation_defense() -> None:
     assert unpickled == fd
     assert isinstance(unpickled, FrozenDict)
     with pytest.raises(TypeError, match="FrozenDict is immutable"):
-        unpickled._data = {}
+        _attempt_setattr(unpickled, "_data", {})
 
     # Hash stability
     h1 = hash(fd)
@@ -908,3 +920,40 @@ def test_r2_frozendict_attribute_mutation_defense() -> None:
     roundtrip = MemoryRecord.from_json(json_repr)
     assert roundtrip.metadata == fd
     assert isinstance(roundtrip.metadata, FrozenDict)
+
+
+def test_p2_02_frozendict_backing_storage_not_mutable() -> None:
+    """P2-02: FrozenDict._data must not expose ordinary mutable dict state."""
+    from types import MappingProxyType
+
+    fd = FrozenDict({"a": 1, "b": "hello"})
+    assert isinstance(fd._data, MappingProxyType)
+
+    # Item assignment raises TypeError
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        _attempt_setitem(fd._data, "a", 999)
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        _attempt_setitem(fd._data, "new_key", "test")
+
+    # Item deletion raises TypeError
+    with pytest.raises(TypeError, match="does not support item deletion"):
+        _attempt_delitem(fd._data, "a")
+
+    # Mutating dict methods do not exist on mappingproxy
+    assert not hasattr(fd._data, "clear")
+    assert not hasattr(fd._data, "pop")
+    assert not hasattr(fd._data, "popitem")
+    assert not hasattr(fd._data, "setdefault")
+    assert not hasattr(fd._data, "update")
+
+    # Verify pickle, deepcopy, hash, and JSON serialization remain robust
+    dumped = pickle.dumps(fd)
+    reloaded = pickle.loads(dumped)
+    assert reloaded == fd
+    assert isinstance(reloaded._data, MappingProxyType)
+
+    copied = copy.deepcopy(fd)
+    assert copied == fd
+    assert isinstance(copied._data, MappingProxyType)
+
+    assert hash(fd) == hash(reloaded) == hash(copied)

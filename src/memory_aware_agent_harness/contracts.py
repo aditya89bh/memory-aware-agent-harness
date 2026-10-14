@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from enum import Enum, StrEnum
+from types import MappingProxyType
 from typing import (
     Any,
     NewType,
@@ -35,14 +36,15 @@ ToolInvocationId = NewType("ToolInvocationId", str)
 class FrozenDict(Mapping[Any, Any]):
     """Immutable, hashable mapping that is safe for pickling, deepcopy, and serialization."""
 
-    _data: dict[Any, Any]
+    _data: MappingProxyType[Any, Any]
     _initialized: bool
     _hash: int | None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         if getattr(self, "_initialized", False):
             raise TypeError("FrozenDict is immutable and cannot be re-initialized")
-        object.__setattr__(self, "_data", dict(*args, **kwargs))
+        raw_dict: dict[Any, Any] = dict(*args, **kwargs)
+        object.__setattr__(self, "_data", MappingProxyType(raw_dict))
         object.__setattr__(self, "_initialized", True)
         object.__setattr__(self, "_hash", None)
 
@@ -149,7 +151,7 @@ class FrozenDict(Mapping[Any, Any]):
         return (self.__class__, (dict(self._data),))
 
     def __repr__(self) -> str:
-        return f"FrozenDict({self._data!r})"
+        return f"FrozenDict({dict(self._data)!r})"
 
 
 # --- Normalization and Serialization Helpers ---
