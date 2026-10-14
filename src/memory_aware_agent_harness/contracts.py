@@ -1513,6 +1513,9 @@ class MemoryRecord(SerializableRecord):
     metadata: Mapping[str, Any] = field(default_factory=FrozenDict)
     access_count: int = 0
     version: int = 1
+    origin: MemoryOrigin = MemoryOrigin.EXTERNAL_RETRIEVAL
+    run_id: RunId | None = None
+    branch_id: BranchId | None = None
 
     def __post_init__(self) -> None:
         refs = self.source_references if self.source_references is not None else ()
@@ -1529,6 +1532,19 @@ class MemoryRecord(SerializableRecord):
             "state",
             _coerce_enum(MemoryState, self.state, "MemoryRecord.state"),
         )
+        object.__setattr__(
+            self,
+            "origin",
+            _coerce_enum(MemoryOrigin, self.origin, "MemoryRecord.origin"),
+        )
+        if self.run_id is not None:
+            if not str(self.run_id).strip():
+                raise ValueError("MemoryRecord.run_id must not be empty when provided")
+            object.__setattr__(self, "run_id", RunId(str(self.run_id)))
+        if self.branch_id is not None:
+            if not str(self.branch_id).strip():
+                raise ValueError("MemoryRecord.branch_id must not be empty when provided")
+            object.__setattr__(self, "branch_id", BranchId(str(self.branch_id)))
 
         if not str(self.id).strip():
             raise ValueError("MemoryRecord.id must not be empty")
@@ -1576,6 +1592,14 @@ class MemoryRecord(SerializableRecord):
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
         expires_at_raw = data.get("expires_at")
+        run_id_raw = data.get("run_id")
+        branch_id_raw = data.get("branch_id")
+        origin_raw = data.get("origin")
+        origin_val = (
+            _coerce_enum(MemoryOrigin, origin_raw, "MemoryRecord.origin")
+            if origin_raw is not None
+            else MemoryOrigin.EXTERNAL_RETRIEVAL
+        )
         return cls(
             id=MemoryId(str(data["id"])),
             namespace_id=NamespaceId(str(data["namespace_id"])),
@@ -1591,6 +1615,9 @@ class MemoryRecord(SerializableRecord):
             metadata=data.get("metadata", {}),
             access_count=int(data.get("access_count", 0)),
             version=int(data.get("version", 1)),
+            origin=origin_val,
+            run_id=RunId(str(run_id_raw)) if run_id_raw is not None else None,
+            branch_id=BranchId(str(branch_id_raw)) if branch_id_raw is not None else None,
         )
 
 
@@ -1607,6 +1634,9 @@ class MemoryCandidate(SerializableRecord):
     rationale: str
     validation_status: CandidateStatus = CandidateStatus.PENDING
     rejection_reason: str | None = None
+    origin: MemoryOrigin = MemoryOrigin.AGENT_OBSERVATION
+    run_id: RunId | None = None
+    branch_id: BranchId | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1623,6 +1653,19 @@ class MemoryCandidate(SerializableRecord):
                 "MemoryCandidate.validation_status",
             ),
         )
+        object.__setattr__(
+            self,
+            "origin",
+            _coerce_enum(MemoryOrigin, self.origin, "MemoryCandidate.origin"),
+        )
+        if self.run_id is not None:
+            if not str(self.run_id).strip():
+                raise ValueError("MemoryCandidate.run_id must not be empty when provided")
+            object.__setattr__(self, "run_id", RunId(str(self.run_id)))
+        if self.branch_id is not None:
+            if not str(self.branch_id).strip():
+                raise ValueError("MemoryCandidate.branch_id must not be empty when provided")
+            object.__setattr__(self, "branch_id", BranchId(str(self.branch_id)))
 
         if not self.candidate_id.strip():
             raise ValueError("MemoryCandidate.candidate_id must not be empty")
@@ -1652,6 +1695,14 @@ class MemoryCandidate(SerializableRecord):
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
         val_status = data.get("validation_status", CandidateStatus.PENDING)
+        origin_raw = data.get("origin")
+        origin_val = (
+            _coerce_enum(MemoryOrigin, origin_raw, "MemoryCandidate.origin")
+            if origin_raw is not None
+            else MemoryOrigin.AGENT_OBSERVATION
+        )
+        run_id_raw = data.get("run_id")
+        branch_id_raw = data.get("branch_id")
         return cls(
             candidate_id=str(data["candidate_id"]),
             namespace_id=NamespaceId(str(data["namespace_id"])),
@@ -1662,6 +1713,9 @@ class MemoryCandidate(SerializableRecord):
             rationale=str(data["rationale"]),
             validation_status=CandidateStatus(val_status),
             rejection_reason=data.get("rejection_reason"),
+            origin=origin_val,
+            run_id=RunId(str(run_id_raw)) if run_id_raw is not None else None,
+            branch_id=BranchId(str(branch_id_raw)) if branch_id_raw is not None else None,
         )
 
 

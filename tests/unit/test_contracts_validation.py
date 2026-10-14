@@ -7,12 +7,14 @@ from datetime import UTC, datetime
 import pytest
 
 from memory_aware_agent_harness.contracts import (
+    BranchId,
     CandidateStatus,
     ContextManifest,
     FrozenDict,
     MemoryCandidate,
     MemoryId,
     MemoryKind,
+    MemoryOrigin,
     MemoryRecord,
     MemoryState,
     ModelDecision,
@@ -350,3 +352,147 @@ def test_m03_reject_lossy_coercion_and_invalid_primitive_types() -> None:
     # Boolean passed for TokenUsage counts is rejected
     with pytest.raises(TypeError, match=r"Token counts must be non-boolean integers"):
         TokenUsage(prompt_tokens=True, completion_tokens=10, total_tokens=11)
+
+
+def test_memory_record_fail_closed_provenance_and_scoping() -> None:
+    """Provenance must fail-closed to EXTERNAL_RETRIEVAL and run/branch scoping validated."""
+    now = datetime(2026, 10, 14, 12, 0, 0, tzinfo=UTC)
+    raw_dict = {
+        "id": "mem_prov_01",
+        "namespace_id": "ns_tenant",
+        "kind": "semantic",
+        "content": "Secret knowledge",
+        "state": "active",
+        "confidence": 0.85,
+        "salience": 0.75,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+
+    # When origin is omitted, it fails closed to EXTERNAL_RETRIEVAL, never SYSTEM_PROVIDED
+    rec_omitted = MemoryRecord.from_dict(raw_dict)
+    assert rec_omitted.origin == MemoryOrigin.EXTERNAL_RETRIEVAL
+    assert rec_omitted.run_id is None
+    assert rec_omitted.branch_id is None
+
+    # Explicit origin is respected
+    rec_system = MemoryRecord.from_dict({**raw_dict, "origin": "system_provided"})
+    assert rec_system.origin == MemoryOrigin.SYSTEM_PROVIDED
+
+    # Malformed origin string is rejected
+    with pytest.raises(ValueError, match=r"MemoryRecord\.origin must be a valid MemoryOrigin"):
+        MemoryRecord.from_dict({**raw_dict, "origin": "untrusted_source"})
+
+    # Invalid origin type is rejected
+    with pytest.raises(
+        TypeError, match=r"MemoryRecord\.origin must be an instance of MemoryOrigin or str"
+    ):
+        MemoryRecord.from_dict({**raw_dict, "origin": 42})
+
+    # Scoping fields roundtrip successfully
+    rec_scoped = MemoryRecord.from_dict(
+        {**raw_dict, "run_id": "run_01", "branch_id": "branch_main"}
+    )
+    assert rec_scoped.run_id == RunId("run_01")
+    assert rec_scoped.branch_id == BranchId("branch_main")
+    roundtrip = MemoryRecord.from_dict(rec_scoped.to_dict())
+    assert roundtrip.run_id == RunId("run_01")
+    assert roundtrip.branch_id == BranchId("branch_main")
+
+    # Empty run_id and branch_id are rejected when provided
+    with pytest.raises(ValueError, match=r"MemoryRecord\.run_id must not be empty"):
+        MemoryRecord(
+            id=MemoryId("m_1"),
+            namespace_id=NamespaceId("ns_1"),
+            kind=MemoryKind.SEMANTIC,
+            content="content",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            run_id=RunId("   "),
+        )
+
+    with pytest.raises(ValueError, match=r"MemoryRecord\.branch_id must not be empty"):
+        MemoryRecord(
+            id=MemoryId("m_1"),
+            namespace_id=NamespaceId("ns_1"),
+            kind=MemoryKind.SEMANTIC,
+            content="content",
+            state=MemoryState.ACTIVE,
+            confidence=0.5,
+            salience=0.5,
+            created_at=now,
+            updated_at=now,
+            branch_id=BranchId("   "),
+        )
+
+
+def test_memory_candidate_provenance_and_scoping() -> None:
+    """MemoryCandidate provenance defaults to AGENT_OBSERVATION and scoping validated."""
+    raw_dict = {
+        "candidate_id": "cand_01",
+        "namespace_id": "ns_tenant",
+        "kind": "episodic",
+        "content": "User prefers dark mode",
+        "proposed_salience": 0.8,
+        "source_step_id": "step_01",
+        "rationale": "Direct preference statement",
+    }
+
+    # Omitted origin defaults to AGENT_OBSERVATION
+    cand_default = MemoryCandidate.from_dict(raw_dict)
+    assert cand_default.origin == MemoryOrigin.AGENT_OBSERVATION
+    assert cand_default.run_id is None
+    assert cand_default.branch_id is None
+
+    # Explicit origin is respected
+    cand_explicit = MemoryCandidate.from_dict({**raw_dict, "origin": "user_explicit"})
+    assert cand_explicit.origin == MemoryOrigin.USER_EXPLICIT
+
+    # Malformed origin rejected
+    with pytest.raises(ValueError, match=r"MemoryCandidate\.origin must be a valid MemoryOrigin"):
+        MemoryCandidate.from_dict({**raw_dict, "origin": "bogus"})
+
+    # Invalid origin type rejected
+    with pytest.raises(
+        TypeError, match=r"MemoryCandidate\.origin must be an instance of MemoryOrigin or str"
+    ):
+        MemoryCandidate.from_dict({**raw_dict, "origin": False})
+
+    # Scoping fields roundtrip
+    cand_scoped = MemoryCandidate.from_dict(
+        {**raw_dict, "run_id": "run_01", "branch_id": "branch_experiment"}
+    )
+    assert cand_scoped.run_id == RunId("run_01")
+    assert cand_scoped.branch_id == BranchId("branch_experiment")
+    roundtrip = MemoryCandidate.from_dict(cand_scoped.to_dict())
+    assert roundtrip.run_id == RunId("run_01")
+    assert roundtrip.branch_id == BranchId("branch_experiment")
+
+    # Empty run_id and branch_id are rejected
+    with pytest.raises(ValueError, match=r"MemoryCandidate\.run_id must not be empty"):
+        MemoryCandidate(
+            candidate_id="c_1",
+            namespace_id=NamespaceId("ns_1"),
+            kind=MemoryKind.EPISODIC,
+            content="content",
+            proposed_salience=0.5,
+            source_step_id=StepId("step_1"),
+            rationale="rationale",
+            run_id=RunId("   "),
+        )
+
+    with pytest.raises(ValueError, match=r"MemoryCandidate\.branch_id must not be empty"):
+        MemoryCandidate(
+            candidate_id="c_1",
+            namespace_id=NamespaceId("ns_1"),
+            kind=MemoryKind.EPISODIC,
+            content="content",
+            proposed_salience=0.5,
+            source_step_id=StepId("step_1"),
+            rationale="rationale",
+            branch_id=BranchId("   "),
+        )
+
