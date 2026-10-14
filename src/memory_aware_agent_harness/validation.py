@@ -19,10 +19,12 @@ from memory_aware_agent_harness.contracts import (
     FailureDetails,
     HarnessError,
     MemoryCandidate,
+    MemoryFilter,
     MemoryRecord,
     ModelDecision,
     RunBudgets,
     RunResult,
+    ScoredMemoryItem,
     StepResult,
     TokenUsage,
     ToolCallRequest,
@@ -191,6 +193,16 @@ def validate_context_manifest(data: Any) -> ContextManifest:
     return validate_external_input(ContextManifest, data)
 
 
+def validate_memory_filter(data: Any) -> MemoryFilter:
+    """Validate external input into an immutable MemoryFilter."""
+    return validate_external_input(MemoryFilter, data)
+
+
+def validate_scored_memory_item(data: Any) -> ScoredMemoryItem:
+    """Validate external input into an immutable ScoredMemoryItem."""
+    return validate_external_input(ScoredMemoryItem, data)
+
+
 __all__ = [
     "BoundaryValidationError",
     "get_adapter",
@@ -199,10 +211,12 @@ __all__ = [
     "validate_external_input",
     "validate_failure_details",
     "validate_memory_candidate",
+    "validate_memory_filter",
     "validate_memory_record",
     "validate_model_decision",
     "validate_run_budgets",
     "validate_run_result",
+    "validate_scored_memory_item",
     "validate_step_result",
     "validate_token_usage",
     "validate_tool_call_request",

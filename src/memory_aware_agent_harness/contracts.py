@@ -893,6 +893,150 @@ class StorageError(HarnessError):
         self.operation = operation
 
 
+class StorageVersionConflictError(StorageError):
+    """Raised when an optimistic concurrency check fails on record update."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        record_id: str | None = None,
+        expected_version: int | None = None,
+        actual_version: int | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if record_id is not None:
+            d["record_id"] = record_id
+        if expected_version is not None:
+            d["expected_version"] = expected_version
+        if actual_version is not None:
+            d["actual_version"] = actual_version
+        super().__init__(
+            message,
+            operation="optimistic_update",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.error_code = "STORAGE_VERSION_CONFLICT"
+        self.record_id = record_id
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+
+
+class CrossNamespaceAccessError(StorageError):
+    """Raised when an operation attempts to access or mutate records outside its namespace."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        requested_namespace: str | None = None,
+        target_namespace: str | None = None,
+        resource_id: str | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if requested_namespace is not None:
+            d["requested_namespace"] = requested_namespace
+        if target_namespace is not None:
+            d["target_namespace"] = target_namespace
+        if resource_id is not None:
+            d["resource_id"] = resource_id
+        super().__init__(
+            message,
+            operation="namespace_isolation_check",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.error_code = "CROSS_NAMESPACE_ACCESS"
+        self.requested_namespace = requested_namespace
+        self.target_namespace = target_namespace
+        self.resource_id = resource_id
+
+
+class RecordNotFoundError(StorageError):
+    """Raised when a requested persistent record does not exist in the specified namespace."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        record_id: str | None = None,
+        namespace_id: str | None = None,
+        table: str | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if record_id is not None:
+            d["record_id"] = record_id
+        if namespace_id is not None:
+            d["namespace_id"] = namespace_id
+        if table is not None:
+            d["table"] = table
+        super().__init__(
+            message,
+            operation="get_record",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.error_code = "RECORD_NOT_FOUND"
+        self.record_id = record_id
+        self.namespace_id = namespace_id
+        self.table = table
+
+
+class TombstoneActiveError(StorageError):
+    """Raised when an operation attempts to access or restore a tombstoned memory."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        target_memory_id: str | None = None,
+        namespace_id: str | None = None,
+        tombstone_id: str | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if target_memory_id is not None:
+            d["target_memory_id"] = target_memory_id
+        if namespace_id is not None:
+            d["namespace_id"] = namespace_id
+        if tombstone_id is not None:
+            d["tombstone_id"] = tombstone_id
+        super().__init__(
+            message,
+            operation="tombstone_guard",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.error_code = "TOMBSTONE_ACTIVE"
+        self.target_memory_id = target_memory_id
+        self.namespace_id = namespace_id
+        self.tombstone_id = tombstone_id
+
+
 class ExecutionCancelledError(HarnessError):
     """Raised when execution has been explicitly cancelled."""
 
@@ -1720,6 +1864,186 @@ class MemoryCandidate(SerializableRecord):
 
 
 @dataclass(frozen=True)
+class ScoredMemoryItem(SerializableRecord):
+    """Scored memory search result with transparent component breakdown."""
+
+    record: MemoryRecord
+    score: float
+    score_breakdown: Mapping[str, float] = field(default_factory=FrozenDict)
+
+    def __post_init__(self) -> None:
+        rec = self.record
+        if not isinstance(rec, MemoryRecord):
+            raise TypeError(
+                f"ScoredMemoryItem.record must be MemoryRecord, got {type(rec).__name__}"
+            )
+        bd = self.score_breakdown if self.score_breakdown is not None else {}
+        for k, v in bd.items():
+            if not isinstance(k, str):
+                raise TypeError(f"score_breakdown keys must be str, got {type(k).__name__}")
+            if isinstance(v, bool) or not isinstance(v, int | float):
+                raise TypeError(f"score_breakdown values must be float, got {type(v).__name__}")
+            if math.isnan(v) or math.isinf(v):
+                raise ValueError(f"score_breakdown values must be finite, got {v}")
+        object.__setattr__(self, "score_breakdown", _freeze(bd))
+
+        if isinstance(self.score, bool) or not isinstance(self.score, int | float):
+            raise TypeError(
+                f"ScoredMemoryItem.score must be float, got {type(self.score).__name__}"
+            )
+        if math.isnan(self.score) or math.isinf(self.score):
+            raise ValueError(f"ScoredMemoryItem.score must be finite, got {self.score}")
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        rec_raw = data["record"]
+        record = (
+            rec_raw
+            if isinstance(rec_raw, MemoryRecord)
+            else MemoryRecord.from_dict(rec_raw)
+        )
+        bd = data.get("score_breakdown", {})
+        return cls(
+            record=record,
+            score=float(data["score"]),
+            score_breakdown={str(k): float(v) for k, v in bd.items()},
+        )
+
+
+@dataclass(frozen=True)
+class MemoryFilter(SerializableRecord):
+    """Structured query filter for searching and retrieving scoped memories."""
+
+    namespace_id: NamespaceId
+    kinds: tuple[MemoryKind, ...] = field(default_factory=tuple)
+    run_id: RunId | None = None
+    branch_id: BranchId | None = None
+    origin: MemoryOrigin | None = None
+    state: MemoryState | None = MemoryState.ACTIVE
+    as_of: datetime | None = None
+    min_confidence: float | None = None
+    min_salience: float | None = None
+    query_text: str | None = None
+    limit: int = 50
+
+    def __post_init__(self) -> None:
+        if not str(self.namespace_id).strip():
+            raise ValueError("MemoryFilter.namespace_id must not be empty")
+
+        raw_kinds = self.kinds if self.kinds is not None else ()
+        coerced_kinds = tuple(
+            _coerce_enum(MemoryKind, k, "MemoryFilter.kinds") for k in raw_kinds
+        )
+        object.__setattr__(self, "kinds", coerced_kinds)
+
+        if self.run_id is not None:
+            if not str(self.run_id).strip():
+                raise ValueError("MemoryFilter.run_id must not be empty when provided")
+            object.__setattr__(self, "run_id", RunId(str(self.run_id)))
+
+        if self.branch_id is not None:
+            if not str(self.branch_id).strip():
+                raise ValueError("MemoryFilter.branch_id must not be empty when provided")
+            object.__setattr__(self, "branch_id", BranchId(str(self.branch_id)))
+
+        if self.origin is not None:
+            object.__setattr__(
+                self,
+                "origin",
+                _coerce_enum(MemoryOrigin, self.origin, "MemoryFilter.origin"),
+            )
+
+        if self.state is not None:
+            object.__setattr__(
+                self,
+                "state",
+                _coerce_enum(MemoryState, self.state, "MemoryFilter.state"),
+            )
+
+        if self.as_of is not None and self.as_of.tzinfo is None:
+            raise ValueError("MemoryFilter.as_of must be timezone-aware when provided")
+
+        if self.min_confidence is not None:
+            if isinstance(self.min_confidence, bool) or not isinstance(
+                self.min_confidence, int | float
+            ):
+                raise TypeError(
+                    "MemoryFilter.min_confidence must be float, "
+                    f"got {type(self.min_confidence).__name__}"
+                )
+            if math.isnan(self.min_confidence) or math.isinf(self.min_confidence):
+                raise ValueError(
+                    f"MemoryFilter.min_confidence must be finite, got {self.min_confidence}"
+                )
+            if not (0.0 <= self.min_confidence <= 1.0):
+                raise ValueError(
+                    "MemoryFilter.min_confidence must be between 0.0 and 1.0, "
+                    f"got {self.min_confidence}"
+                )
+
+        if self.min_salience is not None:
+            if isinstance(self.min_salience, bool) or not isinstance(
+                self.min_salience, int | float
+            ):
+                raise TypeError(
+                    "MemoryFilter.min_salience must be float, "
+                    f"got {type(self.min_salience).__name__}"
+                )
+            if math.isnan(self.min_salience) or math.isinf(self.min_salience):
+                raise ValueError(
+                    f"MemoryFilter.min_salience must be finite, got {self.min_salience}"
+                )
+            if not (0.0 <= self.min_salience <= 1.0):
+                raise ValueError(
+                    "MemoryFilter.min_salience must be between 0.0 and 1.0, "
+                    f"got {self.min_salience}"
+                )
+
+        if isinstance(self.limit, bool) or not isinstance(self.limit, int):
+            raise TypeError(f"MemoryFilter.limit must be int, got {type(self.limit).__name__}")
+        if self.limit <= 0:
+            raise ValueError(f"MemoryFilter.limit must be > 0, got {self.limit}")
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        raw_kinds = data.get("kinds", ())
+        coerced_kinds = tuple(
+            _coerce_enum(MemoryKind, k, "MemoryFilter.kinds") for k in raw_kinds
+        )
+        as_of_raw = data.get("as_of")
+        as_of_val = _parse_dt(as_of_raw) if as_of_raw is not None else None
+        state_raw = data.get("state")
+        state_val = (
+            _coerce_enum(MemoryState, state_raw, "MemoryFilter.state")
+            if state_raw is not None
+            else None
+        )
+        origin_raw = data.get("origin")
+        origin_val = (
+            _coerce_enum(MemoryOrigin, origin_raw, "MemoryFilter.origin")
+            if origin_raw is not None
+            else None
+        )
+        run_id_raw = data.get("run_id")
+        branch_id_raw = data.get("branch_id")
+        min_conf = data.get("min_confidence")
+        min_sal = data.get("min_salience")
+        return cls(
+            namespace_id=NamespaceId(str(data["namespace_id"])),
+            kinds=coerced_kinds,
+            run_id=RunId(str(run_id_raw)) if run_id_raw is not None else None,
+            branch_id=BranchId(str(branch_id_raw)) if branch_id_raw is not None else None,
+            origin=origin_val,
+            state=state_val,
+            as_of=as_of_val,
+            min_confidence=float(min_conf) if min_conf is not None else None,
+            min_salience=float(min_sal) if min_sal is not None else None,
+            query_text=data.get("query_text"),
+            limit=int(data.get("limit", 50)),
+        )
+
+
+@dataclass(frozen=True)
 class ContextItem(SerializableRecord):
     """A retrieved memory selected for inclusion in the model context."""
 
@@ -2107,6 +2431,132 @@ class MemoryStoreProtocol(Protocol):
 
 
 @runtime_checkable
+class StoragePort(Protocol):
+    """Port for durable multi-tier storage operations supporting full lifecycle persistence."""
+
+    # --- Memory Operations (Superset of MemoryStoreProtocol) ---
+    def put(self, record: MemoryRecord) -> None:
+        """Store or update a memory record."""
+        ...
+
+    def get(self, memory_id: MemoryId, namespace_id: NamespaceId) -> MemoryRecord | None:
+        """Fetch a single memory record by identifier within a namespace."""
+        ...
+
+    def search(
+        self,
+        namespace_id: NamespaceId,
+        query: str,
+        kinds: Sequence[MemoryKind],
+        limit: int,
+    ) -> Sequence[MemoryRecord]:
+        """Search memory records by query and category."""
+        ...
+
+    def search_scored(self, query_filter: MemoryFilter) -> Sequence[ScoredMemoryItem]:
+        """Execute scoped, filtered search returning scored records with component breakdown."""
+        ...
+
+    def list_active(self, namespace_id: NamespaceId, kind: MemoryKind) -> Sequence[MemoryRecord]:
+        """List active memories for a given category."""
+        ...
+
+    def tombstone(self, memory_id: MemoryId, namespace_id: NamespaceId, reason: str) -> None:
+        """Logically delete and tombstone a memory record with verifiable audit."""
+        ...
+
+    def update_optimistic(self, record: MemoryRecord, expected_version: int) -> None:
+        """Update a memory record conditionally verifying the expected version."""
+        ...
+
+    # --- Run & Step Operations ---
+    def save_run(self, run_result: RunResult) -> None:
+        """Persist or update run execution state."""
+        ...
+
+    def get_run(self, run_id: RunId, namespace_id: NamespaceId) -> RunResult | None:
+        """Retrieve run state by identifier within a namespace."""
+        ...
+
+    def save_step(self, step_result: StepResult, namespace_id: NamespaceId) -> None:
+        """Persist a single step execution outcome."""
+        ...
+
+    # --- Tool Invocations ---
+    def record_tool_intent(
+        self,
+        invocation_id: ToolInvocationId,
+        step_id: StepId,
+        namespace_id: NamespaceId,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        side_effect: SideEffectType,
+        idempotency_key: str,
+        dispatched_at: datetime,
+    ) -> None:
+        """Record intent before tool dispatch for crash safety."""
+        ...
+
+    def record_tool_result(self, result: ToolResult, namespace_id: NamespaceId) -> None:
+        """Update tool invocation outcome after dispatch."""
+        ...
+
+    def get_tool_invocation(
+        self,
+        invocation_id: ToolInvocationId,
+        namespace_id: NamespaceId,
+    ) -> ToolResult | None:
+        """Retrieve tool invocation outcome."""
+        ...
+
+    # --- Checkpoints ---
+    def save_checkpoint(
+        self,
+        checkpoint_id: CheckpointId,
+        run_id: RunId,
+        step_id: StepId,
+        branch_id: BranchId,
+        namespace_id: NamespaceId,
+        state_payload: Mapping[str, Any],
+        created_at: datetime,
+        parent_checkpoint_id: CheckpointId | None = None,
+    ) -> None:
+        """Persist durable checkpoint state."""
+        ...
+
+    def get_checkpoint(
+        self,
+        checkpoint_id: CheckpointId,
+        namespace_id: NamespaceId,
+    ) -> Mapping[str, Any] | None:
+        """Retrieve checkpoint state payload."""
+        ...
+
+    # --- Trace Events ---
+    def append_trace_event(
+        self,
+        event_id: EventId,
+        run_id: RunId,
+        namespace_id: NamespaceId,
+        sequence_num: int,
+        event_type: str,
+        payload: Mapping[str, Any],
+        emitted_at: datetime,
+        step_id: StepId | None = None,
+    ) -> None:
+        """Append an immutable trace event to the audit log."""
+        ...
+
+    def get_trace_events(
+        self,
+        run_id: RunId,
+        namespace_id: NamespaceId,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Retrieve trace events for a run ordered by sequence number."""
+        ...
+
+
+@runtime_checkable
 class ToolProtocol(Protocol):
     """Port for executable agent tools."""
 
@@ -2139,6 +2589,7 @@ __all__ = [
     "CompensationFailedError",
     "ContextItem",
     "ContextManifest",
+    "CrossNamespaceAccessError",
     "DeadlineExceededError",
     "DiagnosticListenerError",
     "EventId",
@@ -2149,6 +2600,7 @@ __all__ = [
     "IdGeneratorPort",
     "InvalidStateTransitionError",
     "MemoryCandidate",
+    "MemoryFilter",
     "MemoryId",
     "MemoryKind",
     "MemoryOrigin",
@@ -2161,18 +2613,23 @@ __all__ = [
     "ModelPort",
     "NamespaceId",
     "PolicyViolationError",
+    "RecordNotFoundError",
     "ReplayDivergenceError",
     "RunBudgets",
     "RunId",
     "RunResult",
     "RunStatus",
+    "ScoredMemoryItem",
     "SerializableRecord",
     "SideEffectType",
     "StepId",
     "StepResult",
     "StepState",
     "StorageError",
+    "StoragePort",
+    "StorageVersionConflictError",
     "TokenUsage",
+    "TombstoneActiveError",
     "ToolCallContext",
     "ToolCallRequest",
     "ToolCallStatus",

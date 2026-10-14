@@ -2,35 +2,53 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
 from memory_aware_agent_harness.contracts import (
     BranchId,
     CandidateStatus,
+    CheckpointId,
     ContextManifest,
+    CrossNamespaceAccessError,
+    EventId,
     FrozenDict,
     MemoryCandidate,
+    MemoryFilter,
     MemoryId,
     MemoryKind,
     MemoryOrigin,
     MemoryRecord,
     MemoryState,
+    MemoryStoreProtocol,
     ModelDecision,
     ModelFinishReason,
     NamespaceId,
+    RecordNotFoundError,
     RunBudgets,
     RunId,
     RunResult,
     RunStatus,
+    ScoredMemoryItem,
     SideEffectType,
     StepId,
     StepResult,
+    StorageError,
+    StoragePort,
+    StorageVersionConflictError,
     TokenUsage,
+    TombstoneActiveError,
     ToolCallStatus,
     ToolInvocationId,
     ToolResult,
+)
+from memory_aware_agent_harness.validation import (
+    BoundaryValidationError,
+    validate_memory_filter,
+    validate_scored_memory_item,
 )
 
 
@@ -495,4 +513,293 @@ def test_memory_candidate_provenance_and_scoping() -> None:
             rationale="rationale",
             branch_id=BranchId("   "),
         )
+
+
+def test_storage_custom_exceptions() -> None:
+    """Storage exceptions inherit properly and preserve diagnostic fields."""
+    v_err = StorageVersionConflictError(
+        "Version mismatch",
+        record_id="mem_1",
+        expected_version=1,
+        actual_version=2,
+    )
+    assert isinstance(v_err, StorageError)
+    assert v_err.error_code == "STORAGE_VERSION_CONFLICT"
+    assert v_err.record_id == "mem_1"
+    assert v_err.expected_version == 1
+    assert v_err.actual_version == 2
+
+    ns_err = CrossNamespaceAccessError(
+        "Tenant violation",
+        requested_namespace="ns_a",
+        target_namespace="ns_b",
+        resource_id="res_1",
+    )
+    assert isinstance(ns_err, StorageError)
+    assert ns_err.error_code == "CROSS_NAMESPACE_ACCESS"
+    assert ns_err.requested_namespace == "ns_a"
+    assert ns_err.target_namespace == "ns_b"
+    assert ns_err.resource_id == "res_1"
+
+    rnf_err = RecordNotFoundError(
+        "Missing record",
+        record_id="mem_missing",
+        namespace_id="ns_a",
+        table="memory_records",
+    )
+    assert isinstance(rnf_err, StorageError)
+    assert rnf_err.error_code == "RECORD_NOT_FOUND"
+
+    tomb_err = TombstoneActiveError(
+        "Memory tombstoned",
+        target_memory_id="mem_tomb",
+        namespace_id="ns_a",
+        tombstone_id="tomb_1",
+    )
+    assert isinstance(tomb_err, StorageError)
+    assert tomb_err.error_code == "TOMBSTONE_ACTIVE"
+
+
+def test_scored_memory_item_validation_and_serialization() -> None:
+    """ScoredMemoryItem validates its fields and roundtrips through JSON."""
+    now = datetime(2026, 10, 14, 12, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="Important fact",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=now,
+        updated_at=now,
+    )
+    item = ScoredMemoryItem(
+        record=rec,
+        score=0.95,
+        score_breakdown={"bm25": 0.8, "recency": 0.15},
+    )
+    assert item.score == 0.95
+    assert item.score_breakdown["bm25"] == 0.8
+
+    # Serialization roundtrip
+    d = item.to_dict()
+    from_d = ScoredMemoryItem.from_dict(d)
+    assert from_d == item
+    assert ScoredMemoryItem.from_json(item.to_json()) == item
+
+    # Validation errors
+    with pytest.raises(TypeError, match=r"ScoredMemoryItem\.record must be MemoryRecord"):
+        ScoredMemoryItem(record="not_a_record", score=0.5)  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match=r"ScoredMemoryItem\.score must be float"):
+        ScoredMemoryItem(record=rec, score="not_a_float")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match=r"ScoredMemoryItem\.score must be finite"):
+        ScoredMemoryItem(record=rec, score=float("nan"))
+
+    with pytest.raises(TypeError, match=r"score_breakdown values must be float"):
+        ScoredMemoryItem(record=rec, score=0.5, score_breakdown={"k": "not_float"})  # type: ignore[dict-item]
+
+
+def test_memory_filter_validation_and_serialization() -> None:
+    """MemoryFilter validates boundaries and roundtrips through dict and JSON."""
+    now = datetime(2026, 10, 14, 15, 0, 0, tzinfo=UTC)
+    mf = MemoryFilter(
+        namespace_id=NamespaceId("ns_prod"),
+        kinds=(MemoryKind.EPISODIC, MemoryKind.SEMANTIC),
+        run_id=RunId("run_1"),
+        branch_id=BranchId("branch_main"),
+        origin=MemoryOrigin.AGENT_OBSERVATION,
+        state=MemoryState.ACTIVE,
+        as_of=now,
+        min_confidence=0.7,
+        min_salience=0.5,
+        query_text="user settings",
+        limit=20,
+    )
+    assert mf.limit == 20
+    assert len(mf.kinds) == 2
+
+    # Serialization roundtrip
+    d = mf.to_dict()
+    from_d = MemoryFilter.from_dict(d)
+    assert from_d == mf
+    assert MemoryFilter.from_json(mf.to_json()) == mf
+
+    # Empty namespace rejected
+    with pytest.raises(ValueError, match=r"MemoryFilter\.namespace_id must not be empty"):
+        MemoryFilter(namespace_id=NamespaceId("   "))
+
+    # Naive as_of rejected
+    with pytest.raises(ValueError, match=r"MemoryFilter\.as_of must be timezone-aware"):
+        MemoryFilter(
+            namespace_id=NamespaceId("ns_1"),
+            as_of=datetime(2026, 1, 1, 0, 0),  # Naive
+        )
+
+    # Out of bounds confidence/salience rejected
+    with pytest.raises(
+        ValueError, match=r"MemoryFilter\.min_confidence must be between 0\.0 and 1\.0"
+    ):
+        MemoryFilter(namespace_id=NamespaceId("ns_1"), min_confidence=1.5)
+
+    with pytest.raises(
+        ValueError, match=r"MemoryFilter\.min_salience must be between 0\.0 and 1\.0"
+    ):
+        MemoryFilter(namespace_id=NamespaceId("ns_1"), min_salience=-0.1)
+
+    # Invalid limit rejected
+    with pytest.raises(ValueError, match=r"MemoryFilter\.limit must be > 0"):
+        MemoryFilter(namespace_id=NamespaceId("ns_1"), limit=0)
+
+
+def test_storage_port_protocol_conformance() -> None:
+    """Verify mock implementation conforming to StoragePort and MemoryStoreProtocol."""
+
+    class DummyStorage:
+        def put(self, record: MemoryRecord) -> None:
+            pass
+
+        def get(self, memory_id: MemoryId, namespace_id: NamespaceId) -> MemoryRecord | None:
+            return None
+
+        def search(
+            self,
+            namespace_id: NamespaceId,
+            query: str,
+            kinds: Sequence[MemoryKind],
+            limit: int,
+        ) -> Sequence[MemoryRecord]:
+            return ()
+
+        def search_scored(self, query_filter: MemoryFilter) -> Sequence[ScoredMemoryItem]:
+            return ()
+
+        def list_active(
+            self, namespace_id: NamespaceId, kind: MemoryKind
+        ) -> Sequence[MemoryRecord]:
+            return ()
+
+        def tombstone(self, memory_id: MemoryId, namespace_id: NamespaceId, reason: str) -> None:
+            pass
+
+        def update_optimistic(self, record: MemoryRecord, expected_version: int) -> None:
+            pass
+
+        def save_run(self, run_result: RunResult) -> None:
+            pass
+
+        def get_run(self, run_id: RunId, namespace_id: NamespaceId) -> RunResult | None:
+            return None
+
+        def save_step(self, step_result: StepResult, namespace_id: NamespaceId) -> None:
+            pass
+
+        def record_tool_intent(
+            self,
+            invocation_id: ToolInvocationId,
+            step_id: StepId,
+            namespace_id: NamespaceId,
+            tool_name: str,
+            arguments: Mapping[str, Any],
+            side_effect: SideEffectType,
+            idempotency_key: str,
+            dispatched_at: datetime,
+        ) -> None:
+            pass
+
+        def record_tool_result(self, result: ToolResult, namespace_id: NamespaceId) -> None:
+            pass
+
+        def get_tool_invocation(
+            self,
+            invocation_id: ToolInvocationId,
+            namespace_id: NamespaceId,
+        ) -> ToolResult | None:
+            return None
+
+        def save_checkpoint(
+            self,
+            checkpoint_id: CheckpointId,
+            run_id: RunId,
+            step_id: StepId,
+            branch_id: BranchId,
+            namespace_id: NamespaceId,
+            state_payload: Mapping[str, Any],
+            created_at: datetime,
+            parent_checkpoint_id: CheckpointId | None = None,
+        ) -> None:
+            pass
+
+        def get_checkpoint(
+            self,
+            checkpoint_id: CheckpointId,
+            namespace_id: NamespaceId,
+        ) -> Mapping[str, Any] | None:
+            return None
+
+        def append_trace_event(
+            self,
+            event_id: EventId,
+            run_id: RunId,
+            namespace_id: NamespaceId,
+            sequence_num: int,
+            event_type: str,
+            payload: Mapping[str, Any],
+            emitted_at: datetime,
+            step_id: StepId | None = None,
+        ) -> None:
+            pass
+
+        def get_trace_events(
+            self,
+            run_id: RunId,
+            namespace_id: NamespaceId,
+        ) -> Sequence[Mapping[str, Any]]:
+            return ()
+
+    dummy = DummyStorage()
+    assert isinstance(dummy, StoragePort)
+    assert isinstance(dummy, MemoryStoreProtocol)
+
+
+def test_storage_boundary_validation_adapters() -> None:
+    """Storage adapters parse valid payloads and reject invalid inputs."""
+    valid_filter_dict = {
+        "namespace_id": "ns_test",
+        "kinds": ["semantic"],
+        "limit": 10,
+    }
+    mf = validate_memory_filter(valid_filter_dict)
+    assert mf.namespace_id == NamespaceId("ns_test")
+    assert mf.limit == 10
+
+    with pytest.raises(BoundaryValidationError):
+        validate_memory_filter({"namespace_id": "", "limit": -5})
+
+    now = datetime(2026, 10, 14, 12, 0, 0, tzinfo=UTC)
+    rec = MemoryRecord(
+        id=MemoryId("mem_01"),
+        namespace_id=NamespaceId("ns_01"),
+        kind=MemoryKind.SEMANTIC,
+        content="Important fact",
+        state=MemoryState.ACTIVE,
+        confidence=0.9,
+        salience=0.8,
+        created_at=now,
+        updated_at=now,
+    )
+    valid_item_dict = {
+        "record": rec.to_dict(),
+        "score": 0.88,
+        "score_breakdown": {"base": 0.88},
+    }
+    item = validate_scored_memory_item(valid_item_dict)
+    assert item.score == 0.88
+    assert item.record.id == MemoryId("mem_01")
+
+    with pytest.raises(BoundaryValidationError):
+        validate_scored_memory_item({"record": "bad", "score": "not_num"})
+
 
