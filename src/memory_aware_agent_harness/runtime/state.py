@@ -16,6 +16,7 @@ from memory_aware_agent_harness.contracts import (
     ClockPort,
     FailureDetails,
     IdGeneratorPort,
+    ModelDecision,
     NamespaceId,
     RunBudgets,
     RunId,
@@ -72,6 +73,7 @@ class LifecycleState:
         self.step_count = 0
         self.current_step_id: StepId | None = None
         self.current_step_fsm: StepFSM | None = None
+        self.current_step_decision: ModelDecision | None = None
         self.cumulative_tokens = TokenUsage.zero()
         self.current_step_tokens = TokenUsage.zero()
         self.step_history: list[StepResult] = []
@@ -122,6 +124,7 @@ class LifecycleState:
 
         self.step_count += 1
         self.current_step_tokens = TokenUsage.zero()
+        self.current_step_decision = None
         step_id_str = self.id_generator.generate_id(f"step_{self.run_id}_{self.step_count}")
         step_id = StepId(step_id_str)
         step_fsm = StepFSM(initial_state=StepState.NOT_STARTED, clock=self.clock)

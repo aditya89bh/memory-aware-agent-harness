@@ -433,3 +433,70 @@ def test_exact_time_budget_boundary() -> None:
     # Exactly 5.0 seconds is valid (not > 5.0s)
     assert res.status == RunStatus.COMPLETED
     assert res.final_output == "Exact time answer"
+
+
+def test_p2_01_budget_triggered_termination_preserves_consuming_step_and_tokens() -> None:
+    """P2-01: Budget-triggered termination must preserve consuming step and tokens in history."""
+    budget = RunBudgets(max_tokens=1_000)
+
+    # First verify single-step massive overrun preserves consuming step
+    model_massive = _OverrunModel(tokens_to_consume=50_000, finish_reason=ModelFinishReason.STOP)
+    runtime_massive = AgentRuntime(model=model_massive, budgets=budget)
+    res_massive = runtime_massive.run(
+        "Massive overrun",
+        namespace_id=NamespaceId("ns_p2_01_massive"),
+    )
+
+    assert res_massive.status == RunStatus.BUDGET_EXHAUSTED
+    assert res_massive.step_count == 1
+    assert len(res_massive.step_history) == 1
+    assert res_massive.step_history[0].decision.decision_id == "dec_overrun"
+    assert res_massive.step_history[0].tokens_consumed == 50_000
+    assert res_massive.total_tokens_consumed == 50_000
+    assert sum(s.tokens_consumed for s in res_massive.step_history) == 50_000
+    assert res_massive.failure_details is not None
+    assert res_massive.failure_details.error_code == "BUDGET_EXCEEDED"
+
+    # Multi-step overrun: step 1 is TOOL_CALL (400 tokens), step 2 overruns (800 tokens)
+    class _DummyTool(ToolProtocol):
+        name = "dummy_tool"
+        description = "Dummy"
+        side_effect = SideEffectType.READ_ONLY
+
+        def get_schema(self) -> Mapping[str, Any]:
+            return {"type": "object", "properties": {}}
+
+        def execute(
+            self, arguments: Mapping[str, Any], context: ToolCallContext
+        ) -> Mapping[str, Any]:
+            return {"ok": True}
+
+    step1_tool = ModelDecision(
+        decision_id="dec_tool_1",
+        step_id=StepId("step_0"),
+        finish_reason=ModelFinishReason.TOOL_CALL,
+        tool_calls=(ToolCallRequest(call_id="c_1", tool_name="dummy_tool", arguments={}),),
+        token_usage=TokenUsage(prompt_tokens=200, completion_tokens=200, total_tokens=400),
+    )
+    step2_dec = ModelDecision(
+        decision_id="dec_step2_overrun",
+        step_id=StepId("step_1"),
+        finish_reason=ModelFinishReason.STOP,
+        content="Attempting step 2 that exceeds token budget",
+        token_usage=TokenUsage(prompt_tokens=400, completion_tokens=400, total_tokens=800),
+    )
+    model_multi = FakeModelAdapter(responses=[step1_tool, step2_dec])
+    runtime_multi = AgentRuntime(model=model_multi, tools=[_DummyTool()], budgets=budget)
+    res_multi = runtime_multi.run("Multi step overrun", namespace_id=NamespaceId("ns_p2_01_multi"))
+
+    assert res_multi.status == RunStatus.BUDGET_EXHAUSTED
+    assert res_multi.step_count == 2
+    assert len(res_multi.step_history) == 2
+    assert res_multi.step_history[0].decision.decision_id == "dec_tool_1"
+    assert res_multi.step_history[0].tokens_consumed == 400
+    assert res_multi.step_history[1].decision.decision_id == "dec_step2_overrun"
+    assert res_multi.step_history[1].tokens_consumed == 800
+    assert res_multi.total_tokens_consumed == 1_200
+    assert sum(s.tokens_consumed for s in res_multi.step_history) == 1_200
+    assert res_multi.failure_details is not None
+    assert res_multi.failure_details.error_code == "BUDGET_EXCEEDED"

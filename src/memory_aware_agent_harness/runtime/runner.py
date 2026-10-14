@@ -446,7 +446,9 @@ class AgentRuntime:
             )
         except BaseException as exc:
             # Preserve partial step and tool execution history on aborted/failed steps
-            if decision is not None and not any(s.step_id == step_id for s in state.step_history):
+            effective_decision = decision if decision is not None else state.current_step_decision
+            has_step = any(s.step_id == step_id for s in state.step_history)
+            if effective_decision is not None and not has_step:
                 to_fd = getattr(exc, "to_failure_details", None)
                 fail_details = to_fd(step_id=step_id) if callable(to_fd) else None
                 if fail_details is None:
@@ -462,7 +464,7 @@ class AgentRuntime:
                     else StepState.FAILED
                 )
                 partial_step = step_compiler.compile_step(
-                    decision=decision,
+                    decision=effective_decision,
                     tool_results=tool_results,
                     failure_details=fail_details,
                     target_state=target_state,
@@ -613,6 +615,7 @@ class AgentRuntime:
             else:
                 eff_tokens = TokenUsage.zero()
         state.record_tokens(eff_tokens)
+        state.current_step_decision = decision
 
         # Enforce budget immediately after model return (P1-H2)
         if not budget_guard.enforce_mid_step(state):
