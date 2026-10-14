@@ -23,6 +23,7 @@ from memory_aware_agent_harness.contracts import (
     ScoredMemoryItem,
     StorageVersionConflictError,
     TombstoneActiveError,
+    TombstoneRecord,
 )
 from memory_aware_agent_harness.storage.connection import transaction
 from memory_aware_agent_harness.storage.scoring import score_and_rank_memories
@@ -201,6 +202,7 @@ def get_memory(
     namespace_id: NamespaceId,
     *,
     include_tombstoned: bool = False,
+    as_of: datetime | None = None,
 ) -> MemoryRecord | None:
     """Fetch a single memory record by identifier within a namespace.
 
@@ -208,10 +210,12 @@ def get_memory(
         conn: Target SQLite connection.
         memory_id: Target memory identifier.
         namespace_id: Expected tenant namespace.
-        include_tombstoned: When False, returns None if record is tombstoned or marked deleted.
+        include_tombstoned: When False, returns None if record is tombstoned
+            or marked deleted/expired.
+        as_of: Optional reference time to evaluate TTL expiration against.
 
     Returns:
-        MemoryRecord or None if not found or tombstoned.
+        MemoryRecord or None if not found, tombstoned, or expired.
 
     Raises:
         CrossNamespaceAccessError: If record belongs to a different namespace.
@@ -234,8 +238,13 @@ def get_memory(
         )
 
     if not include_tombstoned:
-        if row["state"] == MemoryState.DELETED.value:
+        if row["state"] in (MemoryState.DELETED.value, MemoryState.EXPIRED.value):
             return None
+
+        if as_of is not None and row["expires_at"] is not None:
+            expires_dt = datetime.fromisoformat(row["expires_at"])
+            if expires_dt <= as_of:
+                return None
 
         tomb = conn.execute(
             "SELECT 1 FROM tombstones WHERE target_memory_id = ? AND namespace_id = ?;",
@@ -487,6 +496,17 @@ def tombstone_memory(
         return eff_tomb_id
 
 
+def _row_to_tombstone_record(row: sqlite3.Row) -> TombstoneRecord:
+    """Convert an SQLite row to a TombstoneRecord contract."""
+    return TombstoneRecord(
+        tombstone_id=str(row["tombstone_id"]),
+        target_memory_id=MemoryId(str(row["target_memory_id"])),
+        namespace_id=NamespaceId(str(row["namespace_id"])),
+        reason=str(row["reason"]),
+        tombstoned_at=datetime.fromisoformat(row["tombstoned_at"]),
+    )
+
+
 def is_tombstoned(
     conn: sqlite3.Connection,
     memory_id: MemoryId,
@@ -498,6 +518,223 @@ def is_tombstoned(
         (str(memory_id), str(namespace_id)),
     ).fetchone()
     return row is not None
+
+
+def get_tombstone(
+    conn: sqlite3.Connection,
+    memory_id: MemoryId,
+    namespace_id: NamespaceId,
+) -> TombstoneRecord | None:
+    """Retrieve the tombstone record for a memory in a namespace, if one exists."""
+    row = conn.execute(
+        "SELECT * FROM tombstones WHERE target_memory_id = ? AND namespace_id = ?;",
+        (str(memory_id), str(namespace_id)),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_tombstone_record(row)
+
+
+def get_tombstones(
+    conn: sqlite3.Connection,
+    namespace_id: NamespaceId,
+    *,
+    limit: int = 100,
+) -> tuple[TombstoneRecord, ...]:
+    """Retrieve recent tombstone audit records for a namespace."""
+    rows = conn.execute(
+        "SELECT * FROM tombstones WHERE namespace_id = ? ORDER BY tombstoned_at DESC LIMIT ?;",
+        (str(namespace_id), limit),
+    ).fetchall()
+    return tuple(_row_to_tombstone_record(r) for r in rows)
+
+
+def list_tombstoned_memory_ids(
+    conn: sqlite3.Connection,
+    namespace_id: NamespaceId,
+) -> frozenset[MemoryId]:
+    """Return all tombstoned memory IDs in a namespace for anti-resurrection reconciliation."""
+    rows = conn.execute(
+        "SELECT target_memory_id FROM tombstones WHERE namespace_id = ?;",
+        (str(namespace_id),),
+    ).fetchall()
+    return frozenset(MemoryId(r["target_memory_id"]) for r in rows)
+
+
+def hard_delete_memory(
+    conn: sqlite3.Connection,
+    memory_id: MemoryId,
+    namespace_id: NamespaceId,
+    *,
+    reason: str = "HARD_DELETE",
+    tombstone_id: str | None = None,
+    tombstoned_at: datetime | None = None,
+) -> TombstoneRecord:
+    """Execute software-level hard deletion with secure zeroing and durable tombstone audit.
+
+    Conforms to SPEC.md Section 6.1 and ADR-0008:
+    1. Validates record existence and namespace boundary.
+    2. Inserts durable TombstoneRecord in `tombstones` table if not already present.
+    3. Deletes row from `memory_records` with PRAGMA secure_delete enabled.
+    """
+    with transaction(conn):
+        row = conn.execute(
+            "SELECT * FROM memory_records WHERE memory_id = ?;",
+            (str(memory_id),),
+        ).fetchone()
+
+        if row is None:
+            existing_tomb = conn.execute(
+                "SELECT * FROM tombstones WHERE target_memory_id = ? AND namespace_id = ?;",
+                (str(memory_id), str(namespace_id)),
+            ).fetchone()
+            if existing_tomb is not None:
+                return _row_to_tombstone_record(existing_tomb)
+            raise RecordNotFoundError(
+                f"Memory record '{memory_id}' not found in namespace '{namespace_id}'",
+                record_id=str(memory_id),
+                table="memory_records",
+            )
+
+        if row["namespace_id"] != str(namespace_id):
+            raise CrossNamespaceAccessError(
+                f"Cross-namespace access denied: memory '{memory_id}' belongs to "
+                f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
+                requested_namespace=str(namespace_id),
+                target_namespace=str(row["namespace_id"]),
+                resource_id=str(memory_id),
+            )
+
+        eff_tomb_id = tombstone_id or f"tomb_{memory_id}"
+        tomb_dt = tombstoned_at.astimezone(UTC) if tombstoned_at else datetime.now(UTC)
+
+        existing_tomb = conn.execute(
+            "SELECT * FROM tombstones WHERE target_memory_id = ? AND namespace_id = ?;",
+            (str(memory_id), str(namespace_id)),
+        ).fetchone()
+
+        if existing_tomb is None:
+            conn.execute(
+                """
+                INSERT INTO tombstones (
+                    tombstone_id, target_memory_id, namespace_id, reason, tombstoned_at
+                ) VALUES (?, ?, ?, ?, ?);
+                """,
+                (
+                    eff_tomb_id,
+                    str(memory_id),
+                    str(namespace_id),
+                    reason,
+                    tomb_dt.isoformat(),
+                ),
+            )
+            tomb_record = TombstoneRecord(
+                tombstone_id=eff_tomb_id,
+                target_memory_id=memory_id,
+                namespace_id=namespace_id,
+                reason=reason,
+                tombstoned_at=tomb_dt,
+            )
+        else:
+            tomb_record = _row_to_tombstone_record(existing_tomb)
+
+        conn.execute("PRAGMA secure_delete = ON;")
+        conn.execute(
+            "DELETE FROM memory_records WHERE memory_id = ? AND namespace_id = ?;",
+            (str(memory_id), str(namespace_id)),
+        )
+
+        return tomb_record
+
+
+def purge_expired_memories(
+    conn: sqlite3.Connection,
+    namespace_id: NamespaceId,
+    as_of: datetime,
+    *,
+    hard_delete: bool = False,
+    limit: int = 100,
+) -> tuple[MemoryId, ...]:
+    """Purge or mark expired memories older than as_of timestamp.
+
+    Args:
+        conn: Target SQLite connection.
+        namespace_id: Target tenant namespace.
+        as_of: Deterministic boundary timestamp.
+        hard_delete: If True, executes PRAGMA secure_delete DELETE and creates tombstones;
+                     if False, sets state = 'expired' (soft deletion).
+        limit: Maximum records to purge in single batch.
+
+    Returns:
+        Tuple of affected MemoryIds.
+    """
+    if as_of.tzinfo is None:
+        raise ValueError("as_of datetime must be timezone-aware")
+
+    as_of_iso = as_of.astimezone(UTC).isoformat()
+
+    with transaction(conn):
+        rows = conn.execute(
+            """
+            SELECT memory_id FROM memory_records
+            WHERE namespace_id = ?
+              AND expires_at IS NOT NULL
+              AND expires_at <= ?
+              AND state != 'deleted'
+            ORDER BY expires_at ASC
+            LIMIT ?;
+            """,
+            (str(namespace_id), as_of_iso, limit),
+        ).fetchall()
+
+        if not rows:
+            return ()
+
+        expired_ids = tuple(MemoryId(r["memory_id"]) for r in rows)
+
+        if hard_delete:
+            conn.execute("PRAGMA secure_delete = ON;")
+            for mem_id in expired_ids:
+                existing = conn.execute(
+                    "SELECT 1 FROM tombstones WHERE target_memory_id = ? AND namespace_id = ?;",
+                    (str(mem_id), str(namespace_id)),
+                ).fetchone()
+                if existing is None:
+                    conn.execute(
+                        """
+                        INSERT INTO tombstones (
+                            tombstone_id, target_memory_id, namespace_id, reason, tombstoned_at
+                        ) VALUES (?, ?, ?, ?, ?);
+                        """,
+                        (
+                            f"tomb_ttl_{mem_id}",
+                            str(mem_id),
+                            str(namespace_id),
+                            "TTL_EXPIRED",
+                            as_of_iso,
+                        ),
+                    )
+                conn.execute(
+                    "DELETE FROM memory_records WHERE memory_id = ? AND namespace_id = ?;",
+                    (str(mem_id), str(namespace_id)),
+                )
+        else:
+            for mem_id in expired_ids:
+                conn.execute(
+                    """
+                    UPDATE memory_records
+                    SET state = ?, updated_at = ?
+                    WHERE memory_id = ? AND namespace_id = ?;
+                    """,
+                    (
+                        MemoryState.EXPIRED.value,
+                        as_of_iso,
+                        str(mem_id),
+                        str(namespace_id),
+                    ),
+                )
+
+        return expired_ids
 
 
 def list_active_memories(

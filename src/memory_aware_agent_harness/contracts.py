@@ -2085,6 +2085,66 @@ class MemoryFilter(SerializableRecord):
 
 
 @dataclass(frozen=True)
+class TombstoneRecord(SerializableRecord):
+    """Durable record of logical/physical memory deletion for verifiable forgetting audit."""
+
+    tombstone_id: str
+    target_memory_id: MemoryId
+    namespace_id: NamespaceId
+    reason: str
+    tombstoned_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tombstone_id, str):
+            raise TypeError(
+                f"TombstoneRecord.tombstone_id must be str, got {type(self.tombstone_id).__name__}"
+            )
+        if not self.tombstone_id.strip():
+            raise ValueError("TombstoneRecord.tombstone_id must not be empty")
+
+        if not isinstance(self.target_memory_id, str):
+            raise TypeError(
+                "TombstoneRecord.target_memory_id must be str or MemoryId, "
+                f"got {type(self.target_memory_id).__name__}"
+            )
+        if not str(self.target_memory_id).strip():
+            raise ValueError("TombstoneRecord.target_memory_id must not be empty")
+
+        if not isinstance(self.namespace_id, str):
+            raise TypeError(
+                "TombstoneRecord.namespace_id must be str or NamespaceId, "
+                f"got {type(self.namespace_id).__name__}"
+            )
+        if not str(self.namespace_id).strip():
+            raise ValueError("TombstoneRecord.namespace_id must not be empty")
+
+        if not isinstance(self.reason, str):
+            raise TypeError(f"TombstoneRecord.reason must be str, got {type(self.reason).__name__}")
+        if not self.reason.strip():
+            raise ValueError("TombstoneRecord.reason must not be empty")
+
+        if not isinstance(self.tombstoned_at, datetime):
+            raise TypeError(
+                "TombstoneRecord.tombstoned_at must be datetime, "
+                f"got {type(self.tombstoned_at).__name__}"
+            )
+        if self.tombstoned_at.tzinfo is None:
+            raise ValueError("TombstoneRecord.tombstoned_at must be timezone-aware")
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        tomb_at_raw = data["tombstoned_at"]
+        tomb_at = tomb_at_raw if isinstance(tomb_at_raw, datetime) else _parse_dt(str(tomb_at_raw))
+        return cls(
+            tombstone_id=str(data["tombstone_id"]),
+            target_memory_id=MemoryId(str(data["target_memory_id"])),
+            namespace_id=NamespaceId(str(data["namespace_id"])),
+            reason=str(data["reason"]),
+            tombstoned_at=tomb_at,
+        )
+
+
+@dataclass(frozen=True)
 class ContextItem(SerializableRecord):
     """A retrieved memory selected for inclusion in the model context."""
 
@@ -2672,6 +2732,7 @@ __all__ = [
     "StorageVersionConflictError",
     "TokenUsage",
     "TombstoneActiveError",
+    "TombstoneRecord",
     "ToolCallContext",
     "ToolCallRequest",
     "ToolCallStatus",

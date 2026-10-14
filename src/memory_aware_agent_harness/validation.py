@@ -27,6 +27,7 @@ from memory_aware_agent_harness.contracts import (
     ScoredMemoryItem,
     StepResult,
     TokenUsage,
+    TombstoneRecord,
     ToolCallRequest,
     ToolResult,
 )
@@ -203,6 +204,11 @@ def validate_scored_memory_item(data: Any) -> ScoredMemoryItem:
     return validate_external_input(ScoredMemoryItem, data)
 
 
+def validate_tombstone_record(data: Any) -> TombstoneRecord:
+    """Validate external input into an immutable TombstoneRecord."""
+    return validate_external_input(TombstoneRecord, data)
+
+
 __all__ = [
     "BoundaryValidationError",
     "get_adapter",
@@ -219,6 +225,7 @@ __all__ = [
     "validate_scored_memory_item",
     "validate_step_result",
     "validate_token_usage",
+    "validate_tombstone_record",
     "validate_tool_call_request",
     "validate_tool_result",
 ]
