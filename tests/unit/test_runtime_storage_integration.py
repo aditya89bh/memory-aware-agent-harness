@@ -441,7 +441,13 @@ def test_runtime_fallback_storage_port_without_atomic_commit() -> None:
         ) -> None:
             self.tool_intents.append(str(invocation_id))
 
-        def record_tool_result(self, result: ToolResult, namespace_id: NamespaceId) -> None:
+        def record_tool_result(
+            self,
+            result: ToolResult,
+            namespace_id: NamespaceId,
+            *,
+            completed_at: datetime | None = None,
+        ) -> None:
             self.tool_results.append(result)
 
         def get_tool_invocation(

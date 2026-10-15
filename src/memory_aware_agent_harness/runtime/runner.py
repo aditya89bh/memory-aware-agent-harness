@@ -22,6 +22,7 @@ from memory_aware_agent_harness.contracts import (
     ContextManifest,
     DeadlineExceededError,
     DiagnosticListenerError,
+    DirtyRollbackError,
     ExecutionCancelledError,
     FailureDetails,
     IdGeneratorPort,
@@ -52,6 +53,7 @@ from memory_aware_agent_harness.contracts import (
     ToolCallStatus,
     ToolInvocationId,
     ToolProtocol,
+    ToolReconciliationReport,
     ToolResult,
     compute_state_hash,
 )
@@ -625,6 +627,31 @@ class AgentRuntime:
             reports.append(report)
         return tuple(reports)
 
+    def reconcile_tool_invocations(
+        self,
+        namespace_id: NamespaceId,
+        run_id: RunId | None = None,
+    ) -> ToolReconciliationReport:
+        """Scan and reconcile in-flight tool invocations left pending across crashes."""
+        if self.storage is None:
+            return ToolReconciliationReport(
+                namespace_id=namespace_id,
+                reconciled_count=0,
+                cached_replayed_count=0,
+                marked_unknown_count=0,
+                dirty_non_idempotent_count=0,
+                run_id=run_id,
+            )
+        if hasattr(self.storage, "reconcile_tool_invocations"):
+            return cast(
+                ToolReconciliationReport,
+                self.storage.reconcile_tool_invocations(namespace_id, run_id=run_id),
+            )
+        from memory_aware_agent_harness.runtime.tool_recovery import ToolRecoveryEngine
+
+        engine = ToolRecoveryEngine(self.storage)
+        return engine.reconcile_pending_invocations(namespace_id, run_id=run_id)
+
     def _execute_step(
         self,
         state: LifecycleState,
@@ -960,8 +987,62 @@ class AgentRuntime:
             inv_id = ToolInvocationId(self.id_generator.generate_id(f"inv_{call.tool_name}"))
             tool = self.tools_by_name.get(call.tool_name)
             side_effect = tool.side_effect if tool is not None else SideEffectType.READ_ONLY
-            idemp_key = f"idemp_{inv_id}"
+            idemp_key = str(call.arguments.get("idempotency_key") or f"idemp_{call.call_id}")
             dispatched_at = self.clock.now()
+
+            # Check for cached replay or dirty non-idempotent re-execution prevention
+            if self.storage is not None and hasattr(self.storage, "get_replayable_cached_result"):
+                try:
+                    cached_res = self.storage.get_replayable_cached_result(
+                        idempotency_key=idemp_key,
+                        namespace_id=state.namespace_id,
+                        tool_name=call.tool_name,
+                    )
+                except DirtyRollbackError as dre:
+                    fail_details = FailureDetails(
+                        error_type="DirtyRollbackError",
+                        message=str(dre),
+                        step_id=step_id,
+                        error_code="PARTIAL_DIRTY_ROLLBACK",
+                        recovery_hint="Manual operator intervention or compensation required",
+                    )
+                    blocked_res = ToolResult(
+                        invocation_id=inv_id,
+                        tool_name=call.tool_name,
+                        status=ToolCallStatus.FAILED,
+                        side_effect=side_effect,
+                        idempotency_key=idemp_key,
+                        error=str(dre),
+                        failure_details=fail_details,
+                    )
+                    tool_results.append(blocked_res)
+                    self.event_emitter.emit(
+                        RuntimeEventType.TOOL_COMPLETED,
+                        run_id=state.run_id,
+                        step_id=step_id,
+                        phase=StepState.DISPATCHING_TOOL,
+                        payload={
+                            "tool_name": call.tool_name,
+                            "status": str(ToolCallStatus.FAILED),
+                            "blocked_dirty": True,
+                        },
+                    )
+                    continue
+
+                if cached_res is not None:
+                    tool_results.append(cached_res)
+                    self.event_emitter.emit(
+                        RuntimeEventType.TOOL_COMPLETED,
+                        run_id=state.run_id,
+                        step_id=step_id,
+                        phase=StepState.DISPATCHING_TOOL,
+                        payload={
+                            "tool_name": call.tool_name,
+                            "status": str(ToolCallStatus.COMPLETED),
+                            "replayed": True,
+                        },
+                    )
+                    continue
 
             if self.storage is not None:
                 self.storage.record_tool_intent(

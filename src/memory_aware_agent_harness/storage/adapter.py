@@ -38,7 +38,9 @@ from memory_aware_agent_harness.contracts import (
     StepResult,
     StorageError,
     StoragePort,
+    ToolCallStatus,
     ToolInvocationId,
+    ToolReconciliationReport,
     ToolResult,
 )
 from memory_aware_agent_harness.storage.checkpoints_repo import (
@@ -569,6 +571,59 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             namespace_id=namespace_id,
             error=error,
             completed_at=completed_at,
+        )
+
+    def reconcile_tool_invocations(
+        self,
+        namespace_id: NamespaceId,
+        run_id: RunId | None = None,
+    ) -> ToolReconciliationReport:
+        """Scan and reconcile in-flight tool invocations left pending across crashes."""
+        self._check_open()
+        from memory_aware_agent_harness.runtime.tool_recovery import ToolRecoveryEngine
+
+        engine = ToolRecoveryEngine(self)
+        return engine.reconcile_pending_invocations(namespace_id, run_id=run_id)
+
+    def resolve_tool_invocation(
+        self,
+        invocation_id: ToolInvocationId,
+        namespace_id: NamespaceId,
+        *,
+        status: ToolCallStatus,
+        result: Mapping[str, Any] | None = None,
+        error: str | None = None,
+        completed_at: datetime | None = None,
+    ) -> ToolInvocationRecord:
+        """Resolve an in-flight or OUTCOME_UNKNOWN tool invocation with an explicit outcome."""
+        self._check_open()
+        from memory_aware_agent_harness.runtime.tool_recovery import ToolRecoveryEngine
+
+        engine = ToolRecoveryEngine(self)
+        return engine.resolve_invocation(
+            invocation_id,
+            namespace_id,
+            status=status,
+            result=result,
+            error=error,
+            completed_at=completed_at,
+        )
+
+    def get_replayable_cached_result(
+        self,
+        idempotency_key: str,
+        namespace_id: NamespaceId,
+        tool_name: str,
+    ) -> ToolResult | None:
+        """Check for reusable cached outcome or block illegal non-idempotent re-execution."""
+        self._check_open()
+        from memory_aware_agent_harness.runtime.tool_recovery import ToolRecoveryEngine
+
+        engine = ToolRecoveryEngine(self)
+        return engine.get_replayable_cached_result(
+            idempotency_key=idempotency_key,
+            namespace_id=namespace_id,
+            tool_name=tool_name,
         )
 
     # =========================================================================

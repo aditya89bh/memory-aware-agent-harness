@@ -2686,6 +2686,18 @@ class OrphanedRunReport(SerializableRecord):
     failure_details: FailureDetails
 
 
+@dataclass(frozen=True)
+class ToolReconciliationReport(SerializableRecord):
+    """Outcome report from reconciling pending/unknown tool invocations after a crash."""
+
+    namespace_id: NamespaceId
+    reconciled_count: int
+    cached_replayed_count: int
+    marked_unknown_count: int
+    dirty_non_idempotent_count: int
+    run_id: RunId | None = None
+
+
 @runtime_checkable
 class StoragePort(Protocol):
     """Port for durable multi-tier storage operations supporting full lifecycle persistence."""
@@ -2772,7 +2784,13 @@ class StoragePort(Protocol):
         """Record intent before tool dispatch for crash safety."""
         ...
 
-    def record_tool_result(self, result: ToolResult, namespace_id: NamespaceId) -> None:
+    def record_tool_result(
+        self,
+        result: ToolResult,
+        namespace_id: NamespaceId,
+        *,
+        completed_at: datetime | None = None,
+    ) -> None:
         """Update tool invocation outcome after dispatch."""
         ...
 
@@ -2918,6 +2936,7 @@ __all__ = [
     "ToolExecutionError",
     "ToolInvocationId",
     "ToolProtocol",
+    "ToolReconciliationReport",
     "ToolResult",
     "compute_state_hash",
     "verify_state_hash",

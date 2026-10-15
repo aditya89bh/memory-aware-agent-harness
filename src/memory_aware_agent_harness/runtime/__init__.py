@@ -43,6 +43,7 @@ from memory_aware_agent_harness.runtime.state import (
     SystemIdGenerator,
 )
 from memory_aware_agent_harness.runtime.step_compiler import StepOutcomeCompiler
+from memory_aware_agent_harness.runtime.tool_recovery import ToolRecoveryEngine
 
 __all__ = [
     "AbortDispatcher",
@@ -70,6 +71,7 @@ __all__ = [
     "StepOutcomeCompiler",
     "SystemClock",
     "SystemIdGenerator",
+    "ToolRecoveryEngine",
     "reconcile_orphaned_run",
     "reconcile_orphaned_runs",
     "rehydrate_checkpoint_state",
