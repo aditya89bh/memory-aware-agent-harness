@@ -21,6 +21,10 @@ from memory_aware_agent_harness.contracts import (
     verify_state_hash,
 )
 from memory_aware_agent_harness.storage.connection import transaction
+from memory_aware_agent_harness.storage.security import (
+    PrePersistenceValidator,
+    resolve_validator,
+)
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,7 @@ def append_trace_event(
     payload: Mapping[str, Any] | SerializableRecord,
     emitted_at: datetime | None = None,
     step_id: StepId | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> TraceEventRecord:
     """Append an immutable trace event to the audit log with strict namespace scoping.
 
@@ -181,6 +186,18 @@ def append_trace_event(
                 sort_keys=True,
                 separators=(",", ":"),
             )
+
+        clean_payload_json = str(
+            resolve_validator(validator).sanitize_json_text(
+                payload_json,
+                namespace_id=str(namespace_id),
+                field_name="trace_events.payload_json",
+                record_id=str(event_id),
+            )
+        )
+        if clean_payload_json != payload_json:
+            payload_json = clean_payload_json
+            state_hash = compute_state_hash(json.loads(payload_json))
 
         emitted_dt = emitted_at.astimezone(UTC) if emitted_at else datetime.now(UTC)
         eff_emitted_at = emitted_dt.isoformat()

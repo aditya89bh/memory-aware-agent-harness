@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,6 +27,10 @@ from memory_aware_agent_harness.contracts import (
 )
 from memory_aware_agent_harness.storage.connection import transaction
 from memory_aware_agent_harness.storage.scoring import score_and_rank_memories
+from memory_aware_agent_harness.storage.security import (
+    PrePersistenceValidator,
+    resolve_validator,
+)
 
 
 def _row_to_memory_record(row: sqlite3.Row) -> MemoryRecord:
@@ -69,6 +73,8 @@ def _row_to_memory_record(row: sqlite3.Row) -> MemoryRecord:
 def put_memory(
     conn: sqlite3.Connection,
     record: MemoryRecord,
+    *,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Store or update a memory record with tenant namespace and tombstone guards.
 
@@ -121,11 +127,36 @@ def put_memory(
             else None
         )
         metadata_json = (
-            json.dumps(dict(record.metadata), sort_keys=True, separators=(",", ":"))
+            json.dumps(
+                dict(record.metadata),
+                default=lambda o: dict(o) if isinstance(o, Mapping) else str(o),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             if record.metadata
             else None
         )
         expires_iso = record.expires_at.astimezone(UTC).isoformat() if record.expires_at else None
+        val = resolve_validator(validator)
+        ns_str = str(record.namespace_id)
+        content = val.sanitize_text(
+            record.content,
+            namespace_id=ns_str,
+            field_name="memory_records.content",
+            record_id=str(record.id),
+        )
+        metadata_json = val.sanitize_json_text(
+            metadata_json,
+            namespace_id=ns_str,
+            field_name="memory_records.metadata_json",
+            record_id=str(record.id),
+        )
+        src_refs_json = val.sanitize_json_text(
+            src_refs_json,
+            namespace_id=ns_str,
+            field_name="memory_records.source_references_json",
+            record_id=str(record.id),
+        )
 
         conn.execute(
             """
@@ -155,7 +186,7 @@ def put_memory(
                 str(record.id),
                 str(record.namespace_id),
                 record.kind.value,
-                record.content,
+                content,
                 record.state.value,
                 record.confidence,
                 record.salience,
@@ -260,6 +291,8 @@ def update_memory_optimistic(
     conn: sqlite3.Connection,
     record: MemoryRecord,
     expected_version: int,
+    *,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Update a memory record conditionally verifying expected version for optimistic concurrency.
 
@@ -330,11 +363,36 @@ def update_memory_optimistic(
             else None
         )
         metadata_json = (
-            json.dumps(dict(record.metadata), sort_keys=True, separators=(",", ":"))
+            json.dumps(
+                dict(record.metadata),
+                default=lambda o: dict(o) if isinstance(o, Mapping) else str(o),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             if record.metadata
             else None
         )
         expires_iso = record.expires_at.astimezone(UTC).isoformat() if record.expires_at else None
+        val = resolve_validator(validator)
+        ns_str = str(record.namespace_id)
+        content = val.sanitize_text(
+            record.content,
+            namespace_id=ns_str,
+            field_name="memory_records.content",
+            record_id=str(record.id),
+        )
+        metadata_json = val.sanitize_json_text(
+            metadata_json,
+            namespace_id=ns_str,
+            field_name="memory_records.metadata_json",
+            record_id=str(record.id),
+        )
+        src_refs_json = val.sanitize_json_text(
+            src_refs_json,
+            namespace_id=ns_str,
+            field_name="memory_records.source_references_json",
+            record_id=str(record.id),
+        )
 
         cursor = conn.execute(
             """
@@ -347,7 +405,7 @@ def update_memory_optimistic(
             """,
             (
                 record.kind.value,
-                record.content,
+                content,
                 record.state.value,
                 record.confidence,
                 record.salience,
@@ -406,6 +464,7 @@ def tombstone_memory(
     *,
     tombstone_id: str | None = None,
     tombstoned_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> str:
     """Logically delete and tombstone a memory record with verifiable audit preserving lineage.
 
@@ -463,6 +522,14 @@ def tombstone_memory(
 
         eff_tomb_id = tombstone_id or f"tomb_{memory_id}"
         tomb_dt = tombstoned_at.astimezone(UTC) if tombstoned_at else datetime.now(UTC)
+        reason = str(
+            resolve_validator(validator).sanitize_error_text(
+                reason,
+                namespace_id=str(namespace_id),
+                field_name="tombstones.reason",
+                record_id=str(memory_id),
+            )
+        )
 
         conn.execute(
             """
@@ -569,6 +636,7 @@ def hard_delete_memory(
     reason: str = "HARD_DELETE",
     tombstone_id: str | None = None,
     tombstoned_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> TombstoneRecord:
     """Execute software-level hard deletion with secure zeroing and durable tombstone audit.
 
@@ -607,6 +675,14 @@ def hard_delete_memory(
 
         eff_tomb_id = tombstone_id or f"tomb_{memory_id}"
         tomb_dt = tombstoned_at.astimezone(UTC) if tombstoned_at else datetime.now(UTC)
+        reason = str(
+            resolve_validator(validator).sanitize_error_text(
+                reason,
+                namespace_id=str(namespace_id),
+                field_name="tombstones.reason",
+                record_id=str(memory_id),
+            )
+        )
 
         existing_tomb = conn.execute(
             "SELECT * FROM tombstones WHERE target_memory_id = ? AND namespace_id = ?;",
@@ -816,8 +892,27 @@ def record_memory_lineage(
     namespace_id: NamespaceId,
     source_reference_id: str,
     relationship: str = "derived_from",
+    *,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Record provenance relationship between memory and source reference."""
+    val = resolve_validator(validator)
+    source_reference_id = str(
+        val.sanitize_text(
+            str(source_reference_id),
+            namespace_id=str(namespace_id),
+            field_name="memory_lineage.source_reference_id",
+            record_id=str(target_memory_id),
+        )
+    )
+    relationship = str(
+        val.sanitize_text(
+            relationship,
+            namespace_id=str(namespace_id),
+            field_name="memory_lineage.relationship",
+            record_id=str(target_memory_id),
+        )
+    )
     conn.execute(
         """
         INSERT INTO memory_lineage (

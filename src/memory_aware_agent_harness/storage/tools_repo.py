@@ -21,6 +21,10 @@ from memory_aware_agent_harness.contracts import (
     ToolResult,
 )
 from memory_aware_agent_harness.storage.connection import transaction
+from memory_aware_agent_harness.storage.security import (
+    PrePersistenceValidator,
+    resolve_validator,
+)
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,7 @@ def record_tool_intent(
     side_effect: SideEffectType,
     arguments: Mapping[str, Any] | None = None,
     dispatched_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Record durable intent before executing a tool call with namespace scoping.
 
@@ -168,6 +173,14 @@ def record_tool_intent(
             sort_keys=True,
             separators=(",", ":"),
         )
+        arguments_json = str(
+            resolve_validator(validator).sanitize_json_text(
+                arguments_json,
+                namespace_id=str(namespace_id),
+                field_name="tool_invocations.arguments_json",
+                record_id=str(invocation_id),
+            )
+        )
         eff_dispatched_at = (
             dispatched_at.astimezone(UTC).isoformat()
             if dispatched_at
@@ -209,6 +222,7 @@ def record_tool_result(
     namespace_id: NamespaceId,
     tool_result: ToolResult,
     completed_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Durable record of tool execution result or terminal error with namespace scoping.
 
@@ -247,9 +261,27 @@ def record_tool_result(
             )
 
         result_json = (
-            json.dumps(dict(tool_result.result), sort_keys=True, separators=(",", ":"))
+            json.dumps(
+                dict(tool_result.result),
+                default=lambda o: dict(o) if isinstance(o, Mapping) else str(o),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             if tool_result.result is not None
             else None
+        )
+        val = resolve_validator(validator)
+        result_json = val.sanitize_json_text(
+            result_json,
+            namespace_id=str(namespace_id),
+            field_name="tool_invocations.result_json",
+            record_id=str(invocation_id),
+        )
+        clean_error = val.sanitize_error_text(
+            tool_result.error,
+            namespace_id=str(namespace_id),
+            field_name="tool_invocations.error_text",
+            record_id=str(invocation_id),
         )
         eff_completed_at = (
             completed_at.astimezone(UTC).isoformat()
@@ -266,7 +298,7 @@ def record_tool_result(
             (
                 tool_result.status.value,
                 result_json,
-                tool_result.error,
+                clean_error,
                 eff_completed_at,
                 str(invocation_id),
                 str(namespace_id),
@@ -281,6 +313,7 @@ def mark_invocation_unknown(
     *,
     error: str = "Execution outcome uncertain due to failure or cancellation",
     completed_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Mark a tool invocation's outcome as unknown with explicit namespace scoping."""
     with transaction(conn):
@@ -320,7 +353,12 @@ def mark_invocation_unknown(
             """,
             (
                 ToolCallStatus.OUTCOME_UNKNOWN.value,
-                error,
+                resolve_validator(validator).sanitize_error_text(
+                    error,
+                    namespace_id=str(namespace_id),
+                    field_name="tool_invocations.error_text",
+                    record_id=str(invocation_id),
+                ),
                 eff_completed_at,
                 str(invocation_id),
                 str(namespace_id),

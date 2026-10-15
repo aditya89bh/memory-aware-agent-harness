@@ -11,15 +11,24 @@ Establishes a fail-closed defense-in-depth boundary before data reaches SQLite W
 LIMITATION NOTICE:
 No general-purpose regular expression pipeline can guarantee the detection and removal of
 every arbitrary secret, high-entropy token, or steganographic payload. This module provides
-deterministic pre-persistence sanitation against known credential schemas.
+deterministic pre-persistence sanitation against known credential schemas and a small set of
+credential-named keys. It is a best-effort control, not comprehensive secret detection.
+
+This boundary only protects FUTURE writes. Redaction does not erase anything that was already
+written: SQLite database pages, free pages, and write-ahead-log (WAL) frames that previously held
+sensitive content may persist on disk (and in backups) until separately remediated, for example
+by rotating the exposed credential, running ``VACUUM`` after a WAL checkpoint, and securely
+destroying old database/WAL/backup files. Nothing here guarantees physical erasure.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
 
 from memory_aware_agent_harness.contracts import (
@@ -30,6 +39,41 @@ from memory_aware_agent_harness.contracts import (
 )
 
 logger = logging.getLogger(__name__)
+
+_MAX_PAYLOAD_DEPTH = 64
+
+# Mapping keys whose string values are treated as credentials regardless of their format.
+_SENSITIVE_KEYS: frozenset[str] = frozenset(
+    {
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "client_secret",
+        "secret_key",
+        "api_key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "token",
+        "authorization",
+        "private_key",
+        "credential",
+        "credentials",
+    }
+)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    return key.strip().lower().replace("-", "_") in _SENSITIVE_KEYS
+
+
+def _looks_like_secret_value(value: str) -> bool:
+    """Heuristic: long-enough string that is not already a redaction placeholder."""
+    stripped = value.strip()
+    return len(stripped) >= 8 and not stripped.startswith("[REDACTED")
+
 
 # Pre-compiled high-speed regex patterns for known secret signatures
 _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
@@ -43,17 +87,21 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ),
     (
         "OPENAI_OR_PROVIDER_KEY",
-        re.compile(r"\b(?:sk|org|ant)-(?:live|test|proj)?[A-Za-z0-9_-]{20,}\b"),
+        re.compile(
+            r"(?:\b|(?<=_))(?:sk|org|ant)-(?:live|test|proj)?[A-Za-z0-9_-]{20,}(?:\b|(?=_)|$)"
+        ),
         "[REDACTED_API_KEY]",
     ),
     (
         "GITHUB_TOKEN",
-        re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{36,}\b"),
+        re.compile(
+            r"(?:\b|(?<=_))(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{36,}(?:\b|(?=_)|$)"
+        ),
         "[REDACTED_GITHUB_TOKEN]",
     ),
     (
         "AWS_ACCESS_KEY_ID",
-        re.compile(r"\b(?:AKIA|ASIA|AROA)[0-9A-Z]{16}\b"),
+        re.compile(r"(?:\b|(?<=_))(?:AKIA|ASIA|AROA)[0-9A-Z]{16}(?:\b|(?=_)|$)"),
         "[REDACTED_AWS_KEY]",
     ),
     (
@@ -187,7 +235,23 @@ class PrePersistenceValidator:
         record_id: str | None = None,
     ) -> str:
         """Sanitize a text field, enforcing fail-closed boundaries if configured."""
-        result = redact_secrets(text)
+        if not isinstance(text, str):
+            raise PrePersistenceSecurityError(
+                f"Non-string value supplied for text field '{field_name}'",
+                rule_name="UNSUPPORTED_PAYLOAD_TYPE",
+                namespace_id=namespace_id,
+                record_id=record_id,
+            )
+        try:
+            result = redact_secrets(text)
+        except Exception:
+            # Fail closed. Never chain: the original exception may quote the input text.
+            raise PrePersistenceSecurityError(
+                f"Pre-persistence sanitization failed for '{field_name}'; write rejected",
+                rule_name="SANITIZATION_FAILURE",
+                namespace_id=namespace_id,
+                record_id=record_id,
+            ) from None
         if result.secrets_detected > 0:
             if self.fail_closed:
                 # IMPORTANT: Never include the detected secret in the error or logs!
@@ -215,43 +279,215 @@ class PrePersistenceValidator:
         *,
         namespace_id: str,
         record_id: str | None = None,
+        field_name: str = "metadata",
     ) -> dict[str, Any]:
-        """Recursively scan and sanitize string values inside a dictionary."""
-        sanitized: dict[str, Any] = {}
-        for k, v in mapping.items():
-            if isinstance(v, str):
-                sanitized[k] = self.sanitize_text(
-                    v,
+        """Recursively scan and sanitize every string inside a nested mapping."""
+        result = self.sanitize_payload(
+            mapping,
+            namespace_id=namespace_id,
+            field_name=field_name,
+            record_id=record_id,
+        )
+        return dict(result)
+
+    def sanitize_payload(
+        self,
+        value: Any,
+        *,
+        namespace_id: str,
+        field_name: str,
+        record_id: str | None = None,
+    ) -> Any:
+        """Deeply sanitize an arbitrary JSON-like payload before SQL parameters are built.
+
+        Covers nested mappings (keys and values), lists/tuples/sets, and strings at any depth.
+        Fails closed: any unsupported type, excessive nesting, or unexpected sanitizer error
+        raises PrePersistenceSecurityError. The raised error never embeds payload content and
+        suppresses exception chaining so the offending value cannot leak via tracebacks.
+        """
+        try:
+            return self._sanitize_value(
+                value,
+                namespace_id=namespace_id,
+                field_name=field_name,
+                record_id=record_id,
+                depth=0,
+            )
+        except PrePersistenceSecurityError:
+            raise
+        except Exception:
+            # Deliberately omit the original exception: it may quote secret-bearing content.
+            raise PrePersistenceSecurityError(
+                f"Pre-persistence sanitization failed for '{field_name}'; write rejected",
+                rule_name="SANITIZATION_FAILURE",
+                namespace_id=namespace_id,
+                record_id=record_id,
+            ) from None
+
+    def _sanitize_value(
+        self,
+        value: Any,
+        *,
+        namespace_id: str,
+        field_name: str,
+        record_id: str | None,
+        depth: int,
+    ) -> Any:
+        if depth > _MAX_PAYLOAD_DEPTH:
+            raise PrePersistenceSecurityError(
+                f"Payload nesting in '{field_name}' exceeds the supported depth",
+                rule_name="PAYLOAD_TOO_DEEP",
+                namespace_id=namespace_id,
+                record_id=record_id,
+            )
+
+        if value is None or isinstance(value, bool | int | float):
+            return value
+        if isinstance(value, str):
+            return self.sanitize_text(
+                value,
+                namespace_id=namespace_id,
+                field_name=field_name,
+                record_id=record_id,
+            )
+        if isinstance(value, datetime | date):
+            return value
+        if isinstance(value, Mapping):
+            out: dict[Any, Any] = {}
+            for k, v in value.items():
+                if not isinstance(k, str):
+                    raise PrePersistenceSecurityError(
+                        f"Non-string mapping key in '{field_name}'",
+                        rule_name="UNSUPPORTED_PAYLOAD_TYPE",
+                        namespace_id=namespace_id,
+                        record_id=record_id,
+                    )
+                clean_key = self.sanitize_text(
+                    k,
                     namespace_id=namespace_id,
-                    field_name=f"metadata.{k}",
+                    field_name=f"{field_name}.<key>",
                     record_id=record_id,
                 )
-            elif isinstance(v, Mapping):
-                sanitized[k] = self.sanitize_mapping(
+                cleaned = self._sanitize_value(
                     v,
                     namespace_id=namespace_id,
+                    field_name=field_name,
                     record_id=record_id,
+                    depth=depth + 1,
                 )
-            elif isinstance(v, tuple | list):
-                sanitized_list: list[Any] = []
-                for item in v:
-                    if isinstance(item, str):
-                        sanitized_list.append(
-                            self.sanitize_text(
-                                item,
-                                namespace_id=namespace_id,
-                                field_name=f"metadata.{k}[]",
-                                record_id=record_id,
-                            )
-                        )
-                    else:
-                        sanitized_list.append(item)
-                sanitized[k] = (
-                    tuple(sanitized_list) if isinstance(v, tuple) else list(sanitized_list)
+                if (
+                    isinstance(v, str)
+                    and cleaned == v
+                    and _is_sensitive_key(k)
+                    and _looks_like_secret_value(v)
+                ):
+                    cleaned = self._handle_sensitive_key(
+                        namespace_id=namespace_id,
+                        field_name=field_name,
+                        record_id=record_id,
+                    )
+                out[clean_key] = cleaned
+            return out
+        if isinstance(value, tuple | list):
+            items = [
+                self._sanitize_value(
+                    item,
+                    namespace_id=namespace_id,
+                    field_name=f"{field_name}[]",
+                    record_id=record_id,
+                    depth=depth + 1,
                 )
-            else:
-                sanitized[k] = v
-        return sanitized
+                for item in value
+            ]
+            return tuple(items) if isinstance(value, tuple) else items
+
+        raise PrePersistenceSecurityError(
+            f"Unsupported payload type in '{field_name}'",
+            rule_name="UNSUPPORTED_PAYLOAD_TYPE",
+            namespace_id=namespace_id,
+            record_id=record_id,
+        )
+
+    def _handle_sensitive_key(
+        self,
+        *,
+        namespace_id: str,
+        field_name: str,
+        record_id: str | None,
+    ) -> str:
+        """Redact (or reject, when fail-closed) a value stored under a credential-named key."""
+        if self.fail_closed:
+            raise PrePersistenceSecurityError(
+                f"Pre-persistence security check failed: credential-named key in '{field_name}'",
+                rule_name="CREDENTIAL_KEY_VIOLATION",
+                namespace_id=namespace_id,
+                record_id=record_id,
+            )
+        logger.warning(
+            "Redacted value under credential-named key in field '%s' (record: %s, ns: %s)",
+            field_name,
+            record_id,
+            namespace_id,
+        )
+        return "[REDACTED_CREDENTIAL]"
+
+    def sanitize_json_text(
+        self,
+        text: str | None,
+        *,
+        namespace_id: str,
+        field_name: str,
+        record_id: str | None = None,
+    ) -> str | None:
+        """Sanitize an already-serialized JSON document.
+
+        The document is parsed, sanitized structurally, and re-serialized only when content
+        changed, so unaffected payloads are persisted byte-for-byte as produced by the caller.
+        Non-JSON text is sanitized as plain text.
+        """
+        if text is None:
+            return None
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return self.sanitize_text(
+                text,
+                namespace_id=namespace_id,
+                field_name=field_name,
+                record_id=record_id,
+            )
+        cleaned = self.sanitize_payload(
+            parsed,
+            namespace_id=namespace_id,
+            field_name=field_name,
+            record_id=record_id,
+        )
+        if cleaned == parsed:
+            return text
+        return json.dumps(
+            cleaned,
+            default=lambda o: dict(o) if isinstance(o, Mapping) else str(o),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def sanitize_error_text(
+        self,
+        text: str | None,
+        *,
+        namespace_id: str,
+        field_name: str = "error",
+        record_id: str | None = None,
+    ) -> str | None:
+        """Sanitize persisted error and exception messages."""
+        if text is None:
+            return None
+        return self.sanitize_text(
+            text,
+            namespace_id=namespace_id,
+            field_name=field_name,
+            record_id=record_id,
+        )
 
     def sanitize_memory_record(
         self,
@@ -316,3 +552,15 @@ class PrePersistenceValidator:
             run_id=record.run_id,
             branch_id=record.branch_id,
         )
+
+
+_DEFAULT_VALIDATOR = PrePersistenceValidator()
+
+
+def resolve_validator(validator: PrePersistenceValidator | None) -> PrePersistenceValidator:
+    """Return the supplied validator, or the shared redacting default.
+
+    Every durable write path resolves its validator through this function so that no repository
+    function can persist a payload without crossing the pre-persistence boundary.
+    """
+    return validator if validator is not None else _DEFAULT_VALIDATOR

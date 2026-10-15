@@ -224,7 +224,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
         """Store or update a memory record with pre-persistence validation and redaction."""
         self._check_open()
         clean_record = self._validator.sanitize_memory_record(record)
-        put_memory(self._conn, clean_record)
+        put_memory(self._conn, clean_record, validator=self._validator)
 
     def get(
         self,
@@ -291,6 +291,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             reason=reason,
             tombstone_id=tombstone_id,
             tombstoned_at=effective_at,
+            validator=self._validator,
         )
 
     def list_tombstoned_memory_ids(self, namespace_id: NamespaceId) -> frozenset[MemoryId]:
@@ -302,7 +303,12 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
         """Update a memory record conditionally verifying the expected version."""
         self._check_open()
         clean_record = self._validator.sanitize_memory_record(record)
-        update_memory_optimistic(self._conn, record=clean_record, expected_version=expected_version)
+        update_memory_optimistic(
+            self._conn,
+            record=clean_record,
+            expected_version=expected_version,
+            validator=self._validator,
+        )
 
     def get_memory_lineage(
         self, target_memory_id: MemoryId, namespace_id: NamespaceId
@@ -326,6 +332,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             namespace_id=namespace_id,
             source_reference_id=source_reference_id,
             relationship=relationship,
+            validator=self._validator,
         )
 
     # =========================================================================
@@ -335,7 +342,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
     def save_run(self, run_result: RunResult) -> None:
         """Persist or update run execution state."""
         self._check_open()
-        save_run(self._conn, run_result)
+        save_run(self._conn, run_result, validator=self._validator)
 
     def get_run(self, run_id: RunId, namespace_id: NamespaceId) -> RunResult | None:
         """Retrieve run state by identifier within a namespace."""
@@ -370,6 +377,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             error=error,
             failure_details=failure_details,
             completed_at=completed_at,
+            validator=self._validator,
         )
 
     def reconcile_orphaned_run(
@@ -392,6 +400,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             namespace_id=namespace_id,
             strategy=strategy,
             reason=reason,
+            validator=self._validator,
         )
 
     def reconcile_all_orphaned_runs(
@@ -412,12 +421,13 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             namespace_id=namespace_id,
             strategy=strategy,
             reason=reason,
+            validator=self._validator,
         )
 
     def save_step(self, step_result: StepResult, namespace_id: NamespaceId) -> None:
         """Persist a single step execution outcome."""
         self._check_open()
-        save_step(self._conn, step_result, namespace_id)
+        save_step(self._conn, step_result, namespace_id, validator=self._validator)
 
     def record_step_start(
         self,
@@ -487,6 +497,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             side_effect=side_effect,
             arguments=arguments,
             dispatched_at=dispatched_at,
+            validator=self._validator,
         )
 
     def record_tool_result(
@@ -504,6 +515,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             namespace_id=namespace_id,
             tool_result=result,
             completed_at=completed_at,
+            validator=self._validator,
         )
 
     def get_tool_invocation(
@@ -571,6 +583,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             namespace_id=namespace_id,
             error=error,
             completed_at=completed_at,
+            validator=self._validator,
         )
 
     def reconcile_tool_invocations(
@@ -653,6 +666,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             state_payload=state_payload,
             parent_checkpoint_id=parent_checkpoint_id,
             created_at=created_at,
+            validator=self._validator,
         )
 
     def get_checkpoint(
@@ -723,6 +737,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             payload=payload,
             emitted_at=emitted_at,
             step_id=step_id,
+            validator=self._validator,
         )
 
     def get_trace_event_records(
@@ -763,7 +778,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
     def commit_step(self, bundle: StepCommitBundle) -> StepCommitOutcome:
         """Execute the atomic 4-phase step commit transaction."""
         self._check_open()
-        return commit_step_4phase(self._conn, bundle)
+        return commit_step_4phase(self._conn, bundle, validator=self._validator)
 
     def commit_step_transaction(
         self,
@@ -787,4 +802,5 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             lineage_entries=lineage_entries,
             checkpoint=checkpoint,
             trace_events=trace_events,
+            validator=self._validator,
         )

@@ -33,6 +33,7 @@ from memory_aware_agent_harness.storage.runs_repo import (
     list_running_steps_for_run,
     update_run_status,
 )
+from memory_aware_agent_harness.storage.security import PrePersistenceValidator
 from memory_aware_agent_harness.storage.tools_repo import (
     ToolInvocationRecord,
     find_pending_or_unknown_invocations,
@@ -169,6 +170,7 @@ def reconcile_orphaned_run(
     *,
     strategy: Literal["fail", "pause"] = "fail",
     reason: str | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> OrphanedRunReport:
     """Reconcile a single orphaned execution run by ID with tenant namespace scoping.
 
@@ -258,6 +260,7 @@ def reconcile_orphaned_run(
                     ti.invocation_id,
                     namespace_id,
                     error="Invocation outcome uncertain due to unexpected process crash",
+                    validator=validator,
                 )
 
         # 3. Transition in-flight running steps to FAILED
@@ -276,6 +279,7 @@ def reconcile_orphaned_run(
                     error_code="PARTIAL_DIRTY_ROLLBACK" if is_dirty else "ORPHANED_STEP_DETECTED",
                     recovery_hint="Inspect step execution log and tool outcomes before retrying",
                 ),
+                validator=validator,
             )
 
         # 4. Determine new status and failure details
@@ -335,6 +339,7 @@ def reconcile_orphaned_run(
             error=msg,
             failure_details=fd,
             completed_at=completed_at,
+            validator=validator,
         )
 
         return OrphanedRunReport(
@@ -356,6 +361,7 @@ def reconcile_orphaned_runs(
     *,
     strategy: Literal["fail", "pause"] = "fail",
     reason: str | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> tuple[OrphanedRunReport, ...]:
     """Scan and reconcile all orphaned runs within a tenant namespace."""
     orphaned_runs = list_orphaned_runs(conn, namespace_id)
@@ -367,6 +373,7 @@ def reconcile_orphaned_runs(
             namespace_id,
             strategy=strategy,
             reason=reason,
+            validator=validator,
         )
         reports.append(rep)
     return tuple(reports)

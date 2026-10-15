@@ -22,6 +22,10 @@ from memory_aware_agent_harness.contracts import (
     ToolResult,
 )
 from memory_aware_agent_harness.storage.connection import transaction
+from memory_aware_agent_harness.storage.security import (
+    PrePersistenceValidator,
+    resolve_validator,
+)
 
 
 def save_run(
@@ -33,6 +37,7 @@ def save_run(
     token_budget: int = 100_000,
     created_at: datetime | None = None,
     completed_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Persist or update an execution run with tenant namespace enforcement.
 
@@ -89,6 +94,14 @@ def save_run(
             "tool_results": [tr.to_dict() for tr in run_result.tool_results],
         }
         metadata_json = json.dumps(metadata_dict, sort_keys=True, separators=(",", ":"))
+        metadata_json = str(
+            resolve_validator(validator).sanitize_json_text(
+                metadata_json,
+                namespace_id=str(run_result.namespace_id),
+                field_name="runs.metadata_json",
+                record_id=str(run_result.run_id),
+            )
+        )
 
         conn.execute(
             """
@@ -124,7 +137,7 @@ def save_run(
 
         # Also persist all steps from step_history
         for step in run_result.step_history:
-            save_step(conn, step, run_result.namespace_id)
+            save_step(conn, step, run_result.namespace_id, validator=validator)
 
 
 def get_run(
@@ -201,6 +214,7 @@ def save_step(
     state: str = "completed",
     context_manifest_id: str | None = None,
     started_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Persist a single step outcome with tenant namespace scoping.
 
@@ -255,6 +269,21 @@ def save_step(
 
         model_decision_json = step_result.decision.to_json() if step_result.decision else None
         step_result_json = step_result.to_json()
+        val = resolve_validator(validator)
+        model_decision_json = val.sanitize_json_text(
+            model_decision_json,
+            namespace_id=str(namespace_id),
+            field_name="run_steps.model_decision_json",
+            record_id=str(step_result.step_id),
+        )
+        step_result_json = str(
+            val.sanitize_json_text(
+                step_result_json,
+                namespace_id=str(namespace_id),
+                field_name="run_steps.step_result_json",
+                record_id=str(step_result.step_id),
+            )
+        )
         eff_started_at = (
             started_at.astimezone(UTC).isoformat()
             if started_at
@@ -436,6 +465,7 @@ def update_run_status(
     error: str | None = None,
     failure_details: FailureDetails | None = None,
     completed_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Update execution run status, validating tenant namespace scoping."""
     with transaction(conn):
@@ -479,6 +509,14 @@ def update_run_status(
                 meta["failure_details"] = failure_details.to_dict()
 
         metadata_json = json.dumps(meta, sort_keys=True, separators=(",", ":"))
+        metadata_json = str(
+            resolve_validator(validator).sanitize_json_text(
+                metadata_json,
+                namespace_id=str(namespace_id),
+                field_name="runs.metadata_json",
+                record_id=str(run_id),
+            )
+        )
 
         conn.execute(
             """
@@ -577,6 +615,7 @@ def fail_orphaned_step(
     reason: str = "Active step orphaned due to process termination",
     failure_details: FailureDetails | None = None,
     completed_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> None:
     """Transition an in-flight running step to FAILED state upon crash recovery."""
     with transaction(conn):
@@ -646,7 +685,12 @@ def fail_orphaned_step(
             """,
             (
                 eff_completed_at,
-                step_res.to_json(),
+                resolve_validator(validator).sanitize_json_text(
+                    step_res.to_json(),
+                    namespace_id=str(namespace_id),
+                    field_name="run_steps.step_result_json",
+                    record_id=str(step_id),
+                ),
                 str(step_id),
                 str(namespace_id),
             ),

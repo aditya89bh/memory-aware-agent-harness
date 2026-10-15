@@ -22,6 +22,10 @@ from memory_aware_agent_harness.contracts import (
     verify_state_hash,
 )
 from memory_aware_agent_harness.storage.connection import transaction
+from memory_aware_agent_harness.storage.security import (
+    PrePersistenceValidator,
+    resolve_validator,
+)
 
 DEFAULT_BRANCH_ID: BranchId = BranchId("main")
 
@@ -81,6 +85,7 @@ def save_checkpoint(
     state_payload: Mapping[str, Any] | SerializableRecord,
     parent_checkpoint_id: CheckpointId | None = None,
     created_at: datetime | None = None,
+    validator: PrePersistenceValidator | None = None,
 ) -> CheckpointRecord:
     """Persist a durable checkpoint snapshot with state hash computation.
 
@@ -215,6 +220,20 @@ def save_checkpoint(
                 sort_keys=True,
                 separators=(",", ":"),
             )
+
+        # Sanitize before SQL parameters exist; hash what is actually persisted so that
+        # checkpoint integrity verification remains consistent after redaction.
+        clean_payload_json = str(
+            resolve_validator(validator).sanitize_json_text(
+                payload_json,
+                namespace_id=str(namespace_id),
+                field_name="checkpoints.state_payload_json",
+                record_id=str(checkpoint_id),
+            )
+        )
+        if clean_payload_json != payload_json:
+            payload_json = clean_payload_json
+            state_hash = compute_state_hash(json.loads(payload_json))
 
         created_dt = created_at.astimezone(UTC) if created_at else datetime.now(UTC)
         eff_created_at = created_dt.isoformat()

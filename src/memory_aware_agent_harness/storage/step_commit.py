@@ -36,7 +36,10 @@ from memory_aware_agent_harness.storage.checkpoints_repo import (
 from memory_aware_agent_harness.storage.connection import transaction
 from memory_aware_agent_harness.storage.memory_repo import put_memory
 from memory_aware_agent_harness.storage.runs_repo import save_run, save_step
-from memory_aware_agent_harness.storage.security import PrePersistenceValidator
+from memory_aware_agent_harness.storage.security import (
+    PrePersistenceValidator,
+    resolve_validator,
+)
 from memory_aware_agent_harness.storage.trace_repo import (
     TraceEventRecord,
     append_trace_event,
@@ -102,6 +105,8 @@ class StepCommitOutcome:
 def commit_step_4phase(
     conn: sqlite3.Connection,
     bundle: StepCommitBundle,
+    *,
+    validator: PrePersistenceValidator | None = None,
 ) -> StepCommitOutcome:
     """Execute an atomic 4-phase commit transaction for step execution.
 
@@ -174,18 +179,18 @@ def commit_step_4phase(
         with transaction(conn):
             # Phase 1: Proposed memory records
             current_phase = "PHASE_1_MEMORIES"
-            sanitizer = PrePersistenceValidator()
+            sanitizer = resolve_validator(validator)
             for memory_rec in bundle.proposed_memories:
                 clean_rec = sanitizer.sanitize_memory_record(memory_rec)
-                put_memory(conn, clean_rec)
+                put_memory(conn, clean_rec, validator=sanitizer)
 
             # Phase 2: Run execution state and cumulative totals
             current_phase = "PHASE_2_RUN_STATE"
-            save_run(conn, bundle.run_result)
+            save_run(conn, bundle.run_result, validator=sanitizer)
 
             # Phase 3: Discrete step result
             current_phase = "PHASE_3_STEP_RESULT"
-            save_step(conn, bundle.step_result, bundle.namespace_id)
+            save_step(conn, bundle.step_result, bundle.namespace_id, validator=sanitizer)
 
             # Phase 4: Lineage records, checkpoint snapshot, and trace telemetry
             current_phase = "PHASE_4_LINEAGE_AND_TELEMETRY"
@@ -199,8 +204,18 @@ def commit_step_4phase(
                     (
                         ns_str,
                         str(lineage.target_memory_id),
-                        str(lineage.source_reference_id),
-                        lineage.relationship,
+                        sanitizer.sanitize_text(
+                            str(lineage.source_reference_id),
+                            namespace_id=ns_str,
+                            field_name="memory_lineage.source_reference_id",
+                            record_id=str(lineage.target_memory_id),
+                        ),
+                        sanitizer.sanitize_text(
+                            lineage.relationship,
+                            namespace_id=ns_str,
+                            field_name="memory_lineage.relationship",
+                            record_id=str(lineage.target_memory_id),
+                        ),
                     ),
                 )
 
@@ -215,6 +230,7 @@ def commit_step_4phase(
                     state_payload=bundle.checkpoint.state_payload(),
                     parent_checkpoint_id=bundle.checkpoint.parent_checkpoint_id,
                     created_at=bundle.checkpoint.created_at,
+                    validator=sanitizer,
                 )
 
             for event in bundle.trace_events:
@@ -229,6 +245,7 @@ def commit_step_4phase(
                         payload=event.payload(),
                         emitted_at=event.emitted_at,
                         step_id=event.step_id or bundle.step_result.step_id,
+                        validator=sanitizer,
                     )
                 else:
                     append_trace_event(
@@ -241,6 +258,7 @@ def commit_step_4phase(
                         payload=event.payload,
                         emitted_at=event.emitted_at,
                         step_id=event.step_id or bundle.step_result.step_id,
+                        validator=sanitizer,
                     )
 
     except Exception as exc:
@@ -285,6 +303,7 @@ def commit_step_transaction(
     lineage_entries: Sequence[LineageEntry] = (),
     checkpoint: CheckpointRecord | None = None,
     trace_events: Sequence[TraceEventRecord | TraceEventInput] = (),
+    validator: PrePersistenceValidator | None = None,
 ) -> StepCommitOutcome:
     """Convenience wrapper for commit_step_4phase."""
     bundle = StepCommitBundle(
@@ -296,4 +315,4 @@ def commit_step_transaction(
         checkpoint=checkpoint,
         trace_events=trace_events,
     )
-    return commit_step_4phase(conn, bundle)
+    return commit_step_4phase(conn, bundle, validator=validator)
