@@ -315,3 +315,62 @@ def test_sanitize_nested_mappings_and_lists() -> None:
     assert api_key not in cleaned["items"][0]
     assert cleaned["items"][1] == 42
     assert cleaned["count"] == 100
+
+
+def test_redact_secrets_jwt_token() -> None:
+    """Standalone JWT tokens without Bearer prefix are detected and redacted."""
+    raw_jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ."
+        "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    )
+    text = f"User session auth token: {raw_jwt} is active."
+    result = redact_secrets(text)
+    assert result.secrets_detected == 1
+    assert "JWT_TOKEN" in result.matched_rules
+    assert "[REDACTED_JWT_TOKEN]" in result.cleaned_text
+    assert raw_jwt not in result.cleaned_text
+
+
+def test_fail_closed_mode_jwt_token() -> None:
+    """Fail-closed mode rejects writes with standalone JWT tokens without leaking."""
+    raw_jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ."
+        "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    )
+    validator = PrePersistenceValidator(fail_closed=True)
+    with pytest.raises(PrePersistenceSecurityError) as exc_info:
+        validator.sanitize_text(f"Auth token={raw_jwt}", namespace_id="ns_jwt", record_id="r_jwt")
+
+    assert exc_info.value.rule_name == "CREDENTIAL_REDACTION_VIOLATION"
+    assert raw_jwt not in str(exc_info.value)
+    assert raw_jwt not in repr(exc_info.value)
+
+
+def test_sanitize_deeply_nested_mixed_payload() -> None:
+    """Payloads with mixed collections, tuples, and sensitive keys are thoroughly sanitized."""
+    raw_jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    )
+    api_key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456"
+    validator = PrePersistenceValidator(fail_closed=False)
+
+    payload = {
+        "level1": {
+            "level2": {
+                "secrets_tuple": (f"Key is {api_key}", "harmless"),
+                "token_list": [raw_jwt, {"client_secret": "super_secret_val_123"}],
+            }
+        }
+    }
+    sanitized = validator.sanitize_payload(payload, namespace_id="ns_nest", field_name="test_field")
+
+    assert "[REDACTED_API_KEY]" in sanitized["level1"]["level2"]["secrets_tuple"][0]
+    assert api_key not in sanitized["level1"]["level2"]["secrets_tuple"][0]
+    assert "[REDACTED_JWT_TOKEN]" in sanitized["level1"]["level2"]["token_list"][0]
+    assert raw_jwt not in sanitized["level1"]["level2"]["token_list"][0]
+    client_secret_val = sanitized["level1"]["level2"]["token_list"][1]["client_secret"]
+    assert client_secret_val == "[REDACTED_CREDENTIAL]"

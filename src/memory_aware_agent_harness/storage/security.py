@@ -1,10 +1,14 @@
 """Pre-persistence validation and credential redaction security boundary.
 
-Establishes a fail-closed defense-in-depth boundary before data reaches SQLite WAL storage:
+Establishes a defense-in-depth boundary before data reaches SQLite WAL storage:
 - Validates provenance: prohibits unauthorized SYSTEM_PROVIDED elevation, falls back to
   lowest-trust EXTERNAL_RETRIEVAL, and rejects malformed origin classifications.
-- Redacts known API keys, private keys, bearer tokens, and credentials.
-- In fail-closed mode, rejects writes containing detected credentials without persistence.
+- By default (fail_closed=False), performs in-place redaction of known API keys, private keys,
+  JWT tokens, bearer tokens, and credential assignments before parameter binding.
+- In opt-in fail-closed mode (fail_closed=True), rejects writes containing detected credentials
+  without persistence by raising PrePersistenceSecurityError.
+- When sanitization itself encounters an unrecoverable failure (e.g. non-string keys, invalid
+  types, recursion limits), fails closed in all modes.
 - Guarantees zero leakage: rejected sensitive content is never included in exception
   diagnostics or log records.
 
@@ -115,6 +119,11 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
         "BEARER_TOKEN",
         re.compile(r"(?i)\bbearer\s+[A-Za-z0-9_\-\.~+/]{20,}=*\b"),
         "[REDACTED_BEARER_TOKEN]",
+    ),
+    (
+        "JWT_TOKEN",
+        re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+        "[REDACTED_JWT_TOKEN]",
     ),
     (
         "GENERIC_CREDENTIAL_ASSIGNMENT",
