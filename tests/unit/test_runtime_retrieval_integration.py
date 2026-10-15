@@ -83,6 +83,9 @@ class _StubScoredStorage(StoragePort):
     def get_run(self, run_id: Any, namespace_id: NamespaceId) -> Any | None:
         return None
 
+    def list_orphaned_runs(self, namespace_id: NamespaceId) -> Sequence[Any]:
+        return ()
+
     def record_tool_intent(self, *args: Any, **kwargs: Any) -> None:
         pass
 

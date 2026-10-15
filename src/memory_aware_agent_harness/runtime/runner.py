@@ -11,7 +11,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from datetime import timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from memory_aware_agent_harness.contracts import (
     BudgetExceededError,
@@ -67,6 +67,7 @@ from memory_aware_agent_harness.runtime.events import (
 )
 from memory_aware_agent_harness.runtime.fsm import StepFSM
 from memory_aware_agent_harness.runtime.guards import BudgetGuard
+from memory_aware_agent_harness.runtime.recovery import OrphanedRunReport
 from memory_aware_agent_harness.runtime.rehydration import (
     CheckpointRehydrationEngine,
     RehydratedState,
@@ -565,6 +566,64 @@ class AgentRuntime:
             critical_memory_ids=critical_memory_ids,
             conflict_strategy=conflict_strategy,
         )
+
+    def reconcile_orphaned_runs(
+        self,
+        namespace_id: NamespaceId,
+        *,
+        strategy: Literal["fail", "pause"] = "fail",
+        reason: str | None = None,
+    ) -> tuple[OrphanedRunReport, ...]:
+        """Scan and reconcile any runs left in non-terminal states in persistent storage.
+
+        Audits in-flight steps and mutating tool calls:
+        - If mutating tools were in flight, marks PARTIAL_DIRTY_ROLLBACK.
+        - Reconciles run to FAILED or PAUSED.
+        - Marks pending tool invocations as OUTCOME_UNKNOWN.
+        - Fails any running steps.
+
+        Args:
+            namespace_id: Tenant namespace to inspect.
+            strategy: 'fail' or 'pause'.
+            reason: Optional custom failure explanation.
+
+        Returns:
+            Tuple of OrphanedRunReport records describing each reconciled run.
+        """
+        if self.storage is None:
+            return ()
+
+        if hasattr(self.storage, "reconcile_all_orphaned_runs"):
+            return cast(
+                tuple[OrphanedRunReport, ...],
+                self.storage.reconcile_all_orphaned_runs(
+                    namespace_id=namespace_id,
+                    strategy=strategy,
+                    reason=reason,
+                ),
+            )
+
+        # Fallback for generic StoragePort
+        orphaned = self.storage.list_orphaned_runs(namespace_id)
+        reports: list[OrphanedRunReport] = []
+        for run in orphaned:
+            report = OrphanedRunReport(
+                run_id=run.run_id,
+                namespace_id=run.namespace_id,
+                previous_status=run.status,
+                new_status=RunStatus.FAILED if strategy == "fail" else RunStatus.PAUSED,
+                is_dirty=False,
+                mutating_tool_invocations_count=0,
+                reconciled_steps_count=0,
+                reason=reason or f"Orphaned run reconciled to {strategy}",
+                failure_details=FailureDetails(
+                    error_type="OrphanedRunError",
+                    message=reason or f"Orphaned run reconciled to {strategy}",
+                    error_code="ORPHANED_RUN_DETECTED",
+                ),
+            )
+            reports.append(report)
+        return tuple(reports)
 
     def _execute_step(
         self,

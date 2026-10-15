@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from memory_aware_agent_harness.contracts import (
     CrossNamespaceAccessError,
     FailureDetails,
+    ModelDecision,
+    ModelFinishReason,
     NamespaceId,
     RecordNotFoundError,
     RunId,
@@ -418,7 +420,11 @@ def list_steps_for_run(
         (str(run_id), str(namespace_id)),
     ).fetchall()
 
-    return tuple(StepResult.from_json(r["step_result_json"]) for r in rows)
+    return tuple(
+        StepResult.from_json(r["step_result_json"])
+        for r in rows
+        if r["step_result_json"] is not None
+    )
 
 
 def update_run_status(
@@ -485,6 +491,163 @@ def update_run_status(
                 completed_at.astimezone(UTC).isoformat() if completed_at else None,
                 metadata_json,
                 str(run_id),
+                str(namespace_id),
+            ),
+        )
+
+
+def list_orphaned_runs(
+    conn: sqlite3.Connection,
+    namespace_id: NamespaceId | None = None,
+) -> tuple[RunResult, ...]:
+    """List execution runs left in non-terminal states ('running', 'initialized').
+
+    Args:
+        conn: Target SQLite connection.
+        namespace_id: Optional tenant namespace filter.
+
+    Returns:
+        Tuple of reconstructed RunResult contracts for all matching orphaned runs.
+    """
+    if namespace_id is not None:
+        rows = conn.execute(
+            """
+            SELECT run_id, namespace_id FROM runs
+            WHERE namespace_id = ? AND status IN ('running', 'initialized')
+            ORDER BY created_at ASC;
+            """,
+            (str(namespace_id),),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT run_id, namespace_id FROM runs
+            WHERE status IN ('running', 'initialized')
+            ORDER BY created_at ASC;
+            """
+        ).fetchall()
+
+    results: list[RunResult] = []
+    for r in rows:
+        run_res = get_run(conn, RunId(str(r["run_id"])), NamespaceId(str(r["namespace_id"])))
+        if run_res is not None:
+            results.append(run_res)
+    return tuple(results)
+
+
+def list_running_steps_for_run(
+    conn: sqlite3.Connection,
+    run_id: RunId,
+    namespace_id: NamespaceId,
+) -> tuple[StepId, ...]:
+    """Find all step IDs currently in 'running' state for a run."""
+    run_row = conn.execute(
+        "SELECT namespace_id FROM runs WHERE run_id = ?;",
+        (str(run_id),),
+    ).fetchone()
+
+    if run_row is None:
+        return ()
+
+    if run_row["namespace_id"] != str(namespace_id):
+        raise CrossNamespaceAccessError(
+            f"Cross-namespace access denied: run '{run_id}' belongs to "
+            f"namespace '{run_row['namespace_id']}', requested '{namespace_id}'",
+            requested_namespace=str(namespace_id),
+            target_namespace=str(run_row["namespace_id"]),
+            resource_id=str(run_id),
+        )
+
+    rows = conn.execute(
+        """
+        SELECT step_id FROM run_steps
+        WHERE run_id = ? AND namespace_id = ? AND state = 'running'
+        ORDER BY step_number ASC;
+        """,
+        (str(run_id), str(namespace_id)),
+    ).fetchall()
+    return tuple(StepId(str(r["step_id"])) for r in rows)
+
+
+def fail_orphaned_step(
+    conn: sqlite3.Connection,
+    step_id: StepId,
+    namespace_id: NamespaceId,
+    *,
+    reason: str = "Active step orphaned due to process termination",
+    failure_details: FailureDetails | None = None,
+    completed_at: datetime | None = None,
+) -> None:
+    """Transition an in-flight running step to FAILED state upon crash recovery."""
+    with transaction(conn):
+        row = conn.execute(
+            """
+            SELECT run_id, namespace_id, step_number, step_result_json
+            FROM run_steps WHERE step_id = ?;
+            """,
+            (str(step_id),),
+        ).fetchone()
+
+        if row is None:
+            raise RecordNotFoundError(
+                f"Step '{step_id}' not found in namespace '{namespace_id}'",
+                record_id=str(step_id),
+                namespace_id=str(namespace_id),
+                table="run_steps",
+            )
+
+        if row["namespace_id"] != str(namespace_id):
+            raise CrossNamespaceAccessError(
+                f"Cross-namespace access denied: step '{step_id}' belongs to "
+                f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
+                requested_namespace=str(namespace_id),
+                target_namespace=str(row["namespace_id"]),
+                resource_id=str(step_id),
+            )
+
+        eff_completed_at = (
+            completed_at.astimezone(UTC).isoformat()
+            if completed_at
+            else datetime.now(UTC).isoformat()
+        )
+
+        fd = failure_details or FailureDetails(
+            error_type="OrphanedStepError",
+            message=reason,
+            step_id=step_id,
+            error_code="ORPHANED_RUN_DETECTED",
+            recovery_hint="Inspect step execution log and idempotency keys before retrying",
+        )
+        dummy_decision = ModelDecision(
+            decision_id=f"dec_{step_id}",
+            step_id=step_id,
+            finish_reason=ModelFinishReason.ERROR,
+            content=f"Interrupted by crash: {reason}",
+            tool_calls=(),
+        )
+        step_res = StepResult(
+            step_id=step_id,
+            run_id=RunId(str(row["run_id"])),
+            step_number=int(row["step_number"]),
+            decision=dummy_decision,
+            tool_results=(),
+            memories_proposed=0,
+            memories_committed=0,
+            tokens_consumed=0,
+            completed_at=completed_at or datetime.now(UTC),
+            failure_details=fd,
+        )
+
+        conn.execute(
+            """
+            UPDATE run_steps
+            SET state = 'failed', completed_at = ?, step_result_json = ?
+            WHERE step_id = ? AND namespace_id = ?;
+            """,
+            (
+                eff_completed_at,
+                step_res.to_json(),
+                str(step_id),
                 str(namespace_id),
             ),
         )

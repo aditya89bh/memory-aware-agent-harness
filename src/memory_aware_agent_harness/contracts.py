@@ -1148,6 +1148,36 @@ class PrePersistenceSecurityError(StorageError):
         self.record_id = record_id
 
 
+class DirtyRollbackError(HarnessError):
+    """Raised when an orphaned run with in-flight mutating tool side-effects is detected."""
+
+    def __init__(
+        self,
+        message: str = "Active run was orphaned with unconfirmed mutating tool side-effects",
+        *,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if "error_code" not in d:
+            d["error_code"] = "PARTIAL_DIRTY_ROLLBACK"
+        if "recovery_hint" not in d:
+            d["recovery_hint"] = (
+                "Inspect unconfirmed side effects and register compensation handlers "
+                "or manually reconcile before resuming"
+            )
+        super().__init__(
+            message,
+            error_code="PARTIAL_DIRTY_ROLLBACK",
+            details=d,
+            recoverable=recoverable,
+        )
+
+
 class ExecutionCancelledError(HarnessError):
     """Raised when execution has been explicitly cancelled."""
 
@@ -2641,6 +2671,21 @@ class MemoryStoreProtocol(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class OrphanedRunReport(SerializableRecord):
+    """Diagnostic outcome of orphaned run detection and reconciliation."""
+
+    run_id: RunId
+    namespace_id: NamespaceId
+    previous_status: RunStatus
+    new_status: RunStatus
+    is_dirty: bool
+    mutating_tool_invocations_count: int
+    reconciled_steps_count: int
+    reason: str
+    failure_details: FailureDetails
+
+
 @runtime_checkable
 class StoragePort(Protocol):
     """Port for durable multi-tier storage operations supporting full lifecycle persistence."""
@@ -2691,6 +2736,10 @@ class StoragePort(Protocol):
 
     def get_run(self, run_id: RunId, namespace_id: NamespaceId) -> RunResult | None:
         """Retrieve run state by identifier within a namespace."""
+        ...
+
+    def list_orphaned_runs(self, namespace_id: NamespaceId) -> Sequence[RunResult]:
+        """List execution runs left in non-terminal states ('running', 'initialized')."""
         ...
 
     def save_step(self, step_result: StepResult, namespace_id: NamespaceId) -> None:
@@ -2819,6 +2868,7 @@ __all__ = [
     "CrossNamespaceAccessError",
     "DeadlineExceededError",
     "DiagnosticListenerError",
+    "DirtyRollbackError",
     "EventId",
     "ExecutionCancelledError",
     "FailureDetails",
@@ -2839,6 +2889,7 @@ __all__ = [
     "ModelFinishReason",
     "ModelPort",
     "NamespaceId",
+    "OrphanedRunReport",
     "PolicyViolationError",
     "PrePersistenceSecurityError",
     "RecordNotFoundError",

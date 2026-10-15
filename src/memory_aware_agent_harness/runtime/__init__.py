@@ -23,8 +23,12 @@ from memory_aware_agent_harness.runtime.events import (
 from memory_aware_agent_harness.runtime.fsm import RunFSM, StepFSM
 from memory_aware_agent_harness.runtime.guards import BudgetGuard
 from memory_aware_agent_harness.runtime.recovery import (
+    DirtyRollbackError,
     OrphanedRunError,
     OrphanedRunRecoveryHandler,
+    OrphanedRunReport,
+    reconcile_orphaned_run,
+    reconcile_orphaned_runs,
 )
 from memory_aware_agent_harness.runtime.rehydration import (
     CheckpointRehydrationEngine,
@@ -49,11 +53,13 @@ __all__ = [
     "DiagnosticEventEmitter",
     "DiagnosticHook",
     "DiagnosticListenerError",
+    "DirtyRollbackError",
     "EventCollector",
     "FakeModelAdapter",
     "LifecycleState",
     "OrphanedRunError",
     "OrphanedRunRecoveryHandler",
+    "OrphanedRunReport",
     "RehydratedState",
     "RunFSM",
     "RunResultBuilder",
@@ -64,5 +70,7 @@ __all__ = [
     "StepOutcomeCompiler",
     "SystemClock",
     "SystemIdGenerator",
+    "reconcile_orphaned_run",
+    "reconcile_orphaned_runs",
     "rehydrate_checkpoint_state",
 ]

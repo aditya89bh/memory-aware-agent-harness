@@ -700,6 +700,9 @@ def test_storage_port_protocol_conformance() -> None:
         def get_run(self, run_id: RunId, namespace_id: NamespaceId) -> RunResult | None:
             return None
 
+        def list_orphaned_runs(self, namespace_id: NamespaceId) -> Sequence[RunResult]:
+            return ()
+
         def save_step(self, step_result: StepResult, namespace_id: NamespaceId) -> None:
             pass
 

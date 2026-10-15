@@ -407,6 +407,14 @@ def test_runtime_fallback_storage_port_without_atomic_commit() -> None:
         def get_run(self, run_id: RunId, namespace_id: NamespaceId) -> RunResult | None:
             return self.runs.get(str(run_id))
 
+        def list_orphaned_runs(self, namespace_id: NamespaceId) -> Sequence[RunResult]:
+            return [
+                r
+                for r in self.runs.values()
+                if r.namespace_id == namespace_id
+                and r.status in (RunStatus.RUNNING, RunStatus.INITIALIZED)
+            ]
+
         def save_step(self, step_result: StepResult, namespace_id: NamespaceId) -> None:
             self.steps[str(step_result.step_id)] = step_result
 

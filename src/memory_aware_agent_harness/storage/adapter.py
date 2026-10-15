@@ -14,21 +14,24 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from memory_aware_agent_harness.contracts import (
     BranchId,
     CheckpointId,
     EventId,
+    FailureDetails,
     MemoryFilter,
     MemoryId,
     MemoryKind,
     MemoryRecord,
     MemoryStoreProtocol,
     NamespaceId,
+    OrphanedRunReport,
     RecordNotFoundError,
     RunId,
     RunResult,
+    RunStatus,
     ScoredMemoryItem,
     SideEffectType,
     StepId,
@@ -66,9 +69,11 @@ from memory_aware_agent_harness.storage.migrations import apply_migrations
 from memory_aware_agent_harness.storage.runs_repo import (
     get_run,
     get_step,
+    list_orphaned_runs,
     record_step_start,
     save_run,
     save_step,
+    update_run_status,
 )
 from memory_aware_agent_harness.storage.security import PrePersistenceValidator
 from memory_aware_agent_harness.storage.step_commit import (
@@ -82,6 +87,8 @@ from memory_aware_agent_harness.storage.step_commit import (
 from memory_aware_agent_harness.storage.tools_repo import (
     ToolInvocationRecord,
     find_invocation_by_idempotency_key,
+    find_pending_or_unknown_invocations,
+    mark_invocation_unknown,
     record_tool_intent,
     record_tool_result,
 )
@@ -333,6 +340,78 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
         self._check_open()
         return get_run(self._conn, run_id, namespace_id)
 
+    def list_orphaned_runs(
+        self,
+        namespace_id: NamespaceId,
+    ) -> Sequence[RunResult]:
+        """List execution runs left in non-terminal states ('running', 'initialized')."""
+        self._check_open()
+        return list_orphaned_runs(self._conn, namespace_id)
+
+    def update_run_status(
+        self,
+        run_id: RunId,
+        namespace_id: NamespaceId,
+        status: RunStatus,
+        *,
+        error: str | None = None,
+        failure_details: FailureDetails | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        """Update run execution status with tenant namespace scoping."""
+        self._check_open()
+        update_run_status(
+            self._conn,
+            run_id=run_id,
+            namespace_id=namespace_id,
+            status=status,
+            error=error,
+            failure_details=failure_details,
+            completed_at=completed_at,
+        )
+
+    def reconcile_orphaned_run(
+        self,
+        run_id: RunId,
+        namespace_id: NamespaceId,
+        *,
+        strategy: Literal["fail", "pause"] = "fail",
+        reason: str | None = None,
+    ) -> OrphanedRunReport:
+        """Reconcile an orphaned run by ID with dirty rollback detection and tool reconciliation."""
+        self._check_open()
+        from memory_aware_agent_harness.runtime.recovery import (
+            reconcile_orphaned_run as _reconcile,
+        )
+
+        return _reconcile(
+            self._conn,
+            run_id=run_id,
+            namespace_id=namespace_id,
+            strategy=strategy,
+            reason=reason,
+        )
+
+    def reconcile_all_orphaned_runs(
+        self,
+        namespace_id: NamespaceId,
+        *,
+        strategy: Literal["fail", "pause"] = "fail",
+        reason: str | None = None,
+    ) -> tuple[OrphanedRunReport, ...]:
+        """Scan and reconcile all orphaned runs within a tenant namespace."""
+        self._check_open()
+        from memory_aware_agent_harness.runtime.recovery import (
+            reconcile_orphaned_runs as _reconcile_all,
+        )
+
+        return _reconcile_all(
+            self._conn,
+            namespace_id=namespace_id,
+            strategy=strategy,
+            reason=reason,
+        )
+
     def save_step(self, step_result: StepResult, namespace_id: NamespaceId) -> None:
         """Persist a single step execution outcome."""
         self._check_open()
@@ -459,6 +538,37 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             namespace_id=namespace_id,
             tool_name=tool_name,
             idempotency_key=idempotency_key,
+        )
+
+    def find_pending_or_unknown_invocations(
+        self,
+        namespace_id: NamespaceId,
+        run_id: RunId | None = None,
+    ) -> tuple[ToolInvocationRecord, ...]:
+        """Find all pending or outcome-unknown tool invocations within a namespace."""
+        self._check_open()
+        return find_pending_or_unknown_invocations(
+            self._conn,
+            namespace_id=namespace_id,
+            run_id=run_id,
+        )
+
+    def mark_invocation_unknown(
+        self,
+        invocation_id: ToolInvocationId,
+        namespace_id: NamespaceId,
+        *,
+        error: str = "Execution outcome uncertain due to failure or cancellation",
+        completed_at: datetime | None = None,
+    ) -> None:
+        """Mark a tool invocation's outcome as unknown with explicit namespace scoping."""
+        self._check_open()
+        mark_invocation_unknown(
+            self._conn,
+            invocation_id=invocation_id,
+            namespace_id=namespace_id,
+            error=error,
+            completed_at=completed_at,
         )
 
     # =========================================================================
