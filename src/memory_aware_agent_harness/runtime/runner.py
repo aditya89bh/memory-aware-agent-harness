@@ -232,7 +232,6 @@ class AgentRuntime:
             listeners=event_listeners,
             strict=strict_diagnostics,
         )
-        self._last_checkpoint_id: CheckpointId | None = None
 
     def run(
         self,
@@ -1251,12 +1250,11 @@ class AgentRuntime:
                 step_id=step_id,
                 branch_id=DEFAULT_BRANCH_ID,
                 namespace_id=state.namespace_id,
-                parent_checkpoint_id=self._last_checkpoint_id,
+                parent_checkpoint_id=state.last_checkpoint_id,
                 state_payload_json=state_payload_json,
                 state_hash=state_hash,
                 created_at=self.clock.now(),
             )
-            self._last_checkpoint_id = checkpoint.checkpoint_id
         return checkpoint
 
     def _phase_8_compile_outcome(
@@ -1323,4 +1321,6 @@ class AgentRuntime:
                         created_at=checkpoint.created_at,
                         parent_checkpoint_id=checkpoint.parent_checkpoint_id,
                     )
+            if checkpoint is not None:
+                state.last_checkpoint_id = checkpoint.checkpoint_id
         return step_result

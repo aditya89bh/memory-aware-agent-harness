@@ -13,6 +13,7 @@ from typing import Any
 from memory_aware_agent_harness.contracts import (
     BudgetExceededError,
     CancellationToken,
+    CheckpointId,
     ClockPort,
     FailureDetails,
     IdGeneratorPort,
@@ -83,6 +84,8 @@ class LifecycleState:
         self.completed_at: datetime | None = None
         self.failure_details: FailureDetails | None = None
         self.metadata: dict[str, Any] = {}
+        # Per-run checkpoint lineage head. Must never be shared across runs or namespaces.
+        self.last_checkpoint_id: CheckpointId | None = None
 
     @property
     def status(self) -> RunStatus:

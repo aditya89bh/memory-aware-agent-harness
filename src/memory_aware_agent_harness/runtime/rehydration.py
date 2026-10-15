@@ -237,5 +237,6 @@ class CheckpointRehydrationEngine:
 
         state.metadata["rehydrated_from_checkpoint"] = str(checkpoint.checkpoint_id)
         state.metadata["purged_memory_ids"] = [str(m) for m in rehydrated.purged_memory_ids]
+        state.last_checkpoint_id = checkpoint.checkpoint_id
 
         return state, rehydrated

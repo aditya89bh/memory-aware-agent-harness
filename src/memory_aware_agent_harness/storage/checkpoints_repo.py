@@ -158,8 +158,11 @@ def save_checkpoint(
 
         # Validate parent checkpoint if specified
         if parent_checkpoint_id is not None:
+            if str(parent_checkpoint_id) == str(checkpoint_id):
+                raise ValueError(f"Checkpoint '{checkpoint_id}' cannot be its own parent")
+
             parent_row = conn.execute(
-                "SELECT namespace_id FROM checkpoints WHERE checkpoint_id = ?;",
+                "SELECT namespace_id, run_id FROM checkpoints WHERE checkpoint_id = ?;",
                 (str(parent_checkpoint_id),),
             ).fetchone()
 
@@ -180,6 +183,12 @@ def save_checkpoint(
                     requested_namespace=str(namespace_id),
                     target_namespace=str(parent_row["namespace_id"]),
                     resource_id=str(parent_checkpoint_id),
+                )
+
+            if parent_row["run_id"] != str(run_id):
+                raise ValueError(
+                    f"Parent checkpoint '{parent_checkpoint_id}' belongs to run "
+                    f"'{parent_row['run_id']}', cannot be referenced from run '{run_id}'"
                 )
 
         # Validate existing checkpoint if present
