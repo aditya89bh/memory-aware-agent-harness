@@ -2,10 +2,27 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
-from examples.offline_persistence_demo import CalculatorTool, main, run_offline_persistence_demo
+
+try:
+    from examples.offline_persistence_demo import CalculatorTool, main, run_offline_persistence_demo
+except ModuleNotFoundError:
+    _repo = str(Path(__file__).resolve().parent.parent.parent)
+    if _repo not in sys.path and (Path(_repo) / "examples").is_dir():
+        sys.path.insert(0, _repo)
+        from examples.offline_persistence_demo import (
+            CalculatorTool,
+            main,
+            run_offline_persistence_demo,
+        )
+    else:
+        pytest.skip(
+            "examples.offline_persistence_demo not importable in installed distribution",
+            allow_module_level=True,
+        )
 
 
 def test_offline_persistence_demo_execution(tmp_path: Path) -> None:

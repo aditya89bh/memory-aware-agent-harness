@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,10 @@ from memory_aware_agent_harness.contracts import (
 )
 from memory_aware_agent_harness.doubles import DeterministicClock
 from memory_aware_agent_harness.storage.adapter import SQLiteStorageAdapter
+
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 
 def _worker_write_memories(

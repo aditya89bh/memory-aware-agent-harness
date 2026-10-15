@@ -1016,10 +1016,12 @@ class AgentRuntime:
             if trusted_biz_id:
                 # Caller-supplied trusted business operation ID overrides any model arguments
                 idemp_key = trusted_biz_id
-            elif tool is not None and hasattr(tool, "get_business_operation_id") and callable(
-                getattr(tool, "get_business_operation_id", None)
+            elif (
+                tool is not None
+                and hasattr(tool, "get_business_operation_id")
+                and callable(getattr(tool, "get_business_operation_id", None))
             ):
-                biz_func = getattr(tool, "get_business_operation_id")
+                biz_func = getattr(tool, "get_business_operation_id")  # noqa: B009
                 idemp_key = str(biz_func(call.arguments, state))
             else:
                 model_key = call.arguments.get("idempotency_key")
