@@ -68,6 +68,7 @@ from memory_aware_agent_harness.storage.runs_repo import (
     save_run,
     save_step,
 )
+from memory_aware_agent_harness.storage.security import PrePersistenceValidator
 from memory_aware_agent_harness.storage.step_commit import (
     LineageEntry,
     StepCommitBundle,
@@ -135,6 +136,7 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
         settings: StorageSettings | None = None,
         auto_migrate: bool = True,
         clock: Callable[[], datetime] | None = None,
+        validator: PrePersistenceValidator | None = None,
     ) -> None:
         """Initialize adapter with an existing connection or a path to create one.
 
@@ -144,8 +146,10 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             settings: StorageSettings for connection creation.
             auto_migrate: If True, applies all versioned schema migrations on initialization.
             clock: Optional injectable clock function returning timezone-aware datetime.
+            validator: Optional PrePersistenceValidator for credential redaction and provenance.
         """
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._validator = validator or PrePersistenceValidator()
         self._closed = False
 
         if connection is not None:
@@ -206,9 +210,10 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
     # =========================================================================
 
     def put(self, record: MemoryRecord) -> None:
-        """Store or update a memory record."""
+        """Store or update a memory record with pre-persistence validation and redaction."""
         self._check_open()
-        put_memory(self._conn, record)
+        clean_record = self._validator.sanitize_memory_record(record)
+        put_memory(self._conn, clean_record)
 
     def get(
         self,
@@ -280,7 +285,8 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
     def update_optimistic(self, record: MemoryRecord, expected_version: int) -> None:
         """Update a memory record conditionally verifying the expected version."""
         self._check_open()
-        update_memory_optimistic(self._conn, record=record, expected_version=expected_version)
+        clean_record = self._validator.sanitize_memory_record(record)
+        update_memory_optimistic(self._conn, record=clean_record, expected_version=expected_version)
 
     def get_memory_lineage(
         self, target_memory_id: MemoryId, namespace_id: NamespaceId

@@ -53,6 +53,11 @@ from memory_aware_agent_harness.storage.scoring import (
     compute_memory_score,
     score_and_rank_memories,
 )
+from memory_aware_agent_harness.storage.security import (
+    PrePersistenceValidator,
+    RedactionResult,
+    redact_secrets,
+)
 from memory_aware_agent_harness.storage.step_commit import (
     LineageEntry,
     StepCommitBundle,
@@ -87,6 +92,8 @@ __all__ = [
     "LineageEntry",
     "Migration",
     "MigrationError",
+    "PrePersistenceValidator",
+    "RedactionResult",
     "SQLiteStorageAdapter",
     "StepCommitBundle",
     "StepCommitOutcome",
@@ -125,6 +132,7 @@ __all__ = [
     "put_memory",
     "record_tool_intent",
     "record_tool_result",
+    "redact_secrets",
     "save_checkpoint",
     "save_run",
     "save_step",

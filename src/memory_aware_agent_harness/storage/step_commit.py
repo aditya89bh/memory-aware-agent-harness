@@ -36,6 +36,7 @@ from memory_aware_agent_harness.storage.checkpoints_repo import (
 from memory_aware_agent_harness.storage.connection import transaction
 from memory_aware_agent_harness.storage.memory_repo import put_memory
 from memory_aware_agent_harness.storage.runs_repo import save_run, save_step
+from memory_aware_agent_harness.storage.security import PrePersistenceValidator
 from memory_aware_agent_harness.storage.trace_repo import (
     TraceEventRecord,
     append_trace_event,
@@ -173,8 +174,10 @@ def commit_step_4phase(
         with transaction(conn):
             # Phase 1: Proposed memory records
             current_phase = "PHASE_1_MEMORIES"
+            sanitizer = PrePersistenceValidator()
             for memory_rec in bundle.proposed_memories:
-                put_memory(conn, memory_rec)
+                clean_rec = sanitizer.sanitize_memory_record(memory_rec)
+                put_memory(conn, clean_rec)
 
             # Phase 2: Run execution state and cumulative totals
             current_phase = "PHASE_2_RUN_STATE"

@@ -1074,6 +1074,39 @@ class StepCommitError(StorageError):
         self.namespace_id = namespace_id
 
 
+class PrePersistenceSecurityError(StorageError):
+    """Raised when data violates pre-persistence security, provenance, or redaction rules."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        rule_name: str,
+        namespace_id: str,
+        record_id: str | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        d["rule_name"] = rule_name
+        d["namespace_id"] = namespace_id
+        if record_id:
+            d["record_id"] = record_id
+        super().__init__(
+            message,
+            operation="pre_persistence_security",
+            details=d,
+            recoverable=False,
+        )
+        self.error_code = "PRE_PERSISTENCE_SECURITY_VIOLATION"
+        self.rule_name = rule_name
+        self.namespace_id = namespace_id
+        self.record_id = record_id
+
+
 class ExecutionCancelledError(HarnessError):
     """Raised when execution has been explicitly cancelled."""
 
@@ -2751,6 +2784,7 @@ __all__ = [
     "ModelPort",
     "NamespaceId",
     "PolicyViolationError",
+    "PrePersistenceSecurityError",
     "RecordNotFoundError",
     "ReplayDivergenceError",
     "RunBudgets",
