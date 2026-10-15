@@ -47,7 +47,7 @@ from memory_aware_agent_harness.storage.runs_repo import (
     save_step,
     update_run_status,
 )
-from memory_aware_agent_harness.storage.schema import SCHEMA_V1_DDL
+from memory_aware_agent_harness.storage.schema import SCHEMA_V1_DDL, SCHEMA_V2_DDL
 from memory_aware_agent_harness.storage.scoring import (
     WEIGHT_IMPORTANCE,
     WEIGHT_PROVENANCE,
@@ -90,6 +90,7 @@ from memory_aware_agent_harness.storage.trace_repo import (
 
 __all__ = [
     "SCHEMA_V1_DDL",
+    "SCHEMA_V2_DDL",
     "WEIGHT_IMPORTANCE",
     "WEIGHT_PROVENANCE",
     "WEIGHT_RECENCY",

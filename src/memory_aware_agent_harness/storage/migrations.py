@@ -11,7 +11,7 @@ from typing import Any
 
 from memory_aware_agent_harness.contracts import FailureDetails, StorageError
 from memory_aware_agent_harness.storage.connection import transaction
-from memory_aware_agent_harness.storage.schema import SCHEMA_V1_DDL
+from memory_aware_agent_harness.storage.schema import SCHEMA_V1_DDL, SCHEMA_V2_DDL
 
 
 class MigrationError(StorageError):
@@ -62,6 +62,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=1,
         description="Initial unified SQLite schema with 8 core entities and namespace scoping",
         up_sql=SCHEMA_V1_DDL,
+    ),
+    Migration(
+        version=2,
+        description="Add argument_fingerprint column and index to tool_invocations",
+        up_sql=SCHEMA_V2_DDL,
     ),
 )
 
@@ -128,6 +133,15 @@ def apply_migrations(
 
         latest_available = max((m.version for m in MIGRATIONS), default=0)
         target = target_version if target_version is not None else latest_available
+
+        # Reject databases with unsupported future schema versions
+        max_applied = max(applied_map.keys(), default=0)
+        if max_applied > latest_available:
+            raise MigrationError(
+                f"Database schema version {max_applied} is newer than "
+                f"supported version {latest_available}",
+                version=max_applied,
+            )
 
         for migration in MIGRATIONS:
             if migration.version in applied_map:
