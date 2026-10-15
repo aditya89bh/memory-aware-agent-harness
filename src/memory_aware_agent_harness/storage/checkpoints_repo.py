@@ -327,7 +327,7 @@ def get_latest_checkpoint(
         """
         SELECT * FROM checkpoints
         WHERE namespace_id = ? AND run_id = ? AND branch_id = ?
-        ORDER BY created_at DESC LIMIT 1;
+        ORDER BY created_at DESC, rowid DESC LIMIT 1;
         """,
         (str(namespace_id), str(run_id), str(branch_id)),
     ).fetchone()
