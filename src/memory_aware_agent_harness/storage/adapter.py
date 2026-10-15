@@ -54,6 +54,7 @@ from memory_aware_agent_harness.storage.memory_repo import (
     get_memory,
     get_memory_lineage,
     list_active_memories,
+    list_tombstoned_memory_ids,
     put_memory,
     record_memory_lineage,
     search_memories_basic,
@@ -282,6 +283,11 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             tombstone_id=tombstone_id,
             tombstoned_at=effective_at,
         )
+
+    def list_tombstoned_memory_ids(self, namespace_id: NamespaceId) -> frozenset[MemoryId]:
+        """Return all tombstoned memory IDs in a namespace for anti-resurrection reconciliation."""
+        self._check_open()
+        return list_tombstoned_memory_ids(self._conn, namespace_id)
 
     def update_optimistic(self, record: MemoryRecord, expected_version: int) -> None:
         """Update a memory record conditionally verifying the expected version."""

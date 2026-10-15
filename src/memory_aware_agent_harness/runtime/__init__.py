@@ -26,6 +26,11 @@ from memory_aware_agent_harness.runtime.recovery import (
     OrphanedRunError,
     OrphanedRunRecoveryHandler,
 )
+from memory_aware_agent_harness.runtime.rehydration import (
+    CheckpointRehydrationEngine,
+    RehydratedState,
+    rehydrate_checkpoint_state,
+)
 from memory_aware_agent_harness.runtime.result_builder import RunResultBuilder
 from memory_aware_agent_harness.runtime.runner import AgentRuntime
 from memory_aware_agent_harness.runtime.state import (
@@ -40,6 +45,7 @@ __all__ = [
     "AgentRuntime",
     "BudgetGuard",
     "CancellationListener",
+    "CheckpointRehydrationEngine",
     "DiagnosticEventEmitter",
     "DiagnosticHook",
     "DiagnosticListenerError",
@@ -48,6 +54,7 @@ __all__ = [
     "LifecycleState",
     "OrphanedRunError",
     "OrphanedRunRecoveryHandler",
+    "RehydratedState",
     "RunFSM",
     "RunResultBuilder",
     "RuntimeEvent",
@@ -57,4 +64,5 @@ __all__ = [
     "StepOutcomeCompiler",
     "SystemClock",
     "SystemIdGenerator",
+    "rehydrate_checkpoint_state",
 ]

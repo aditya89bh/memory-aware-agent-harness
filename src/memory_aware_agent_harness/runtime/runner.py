@@ -11,7 +11,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 
 from memory_aware_agent_harness.contracts import (
     BudgetExceededError,
@@ -36,6 +36,7 @@ from memory_aware_agent_harness.contracts import (
     ModelPort,
     NamespaceId,
     PolicyViolationError,
+    RecordNotFoundError,
     RunBudgets,
     RunId,
     RunResult,
@@ -44,6 +45,7 @@ from memory_aware_agent_harness.contracts import (
     StepId,
     StepResult,
     StepState,
+    StorageError,
     StoragePort,
     TokenUsage,
     ToolCallContext,
@@ -65,6 +67,10 @@ from memory_aware_agent_harness.runtime.events import (
 )
 from memory_aware_agent_harness.runtime.fsm import StepFSM
 from memory_aware_agent_harness.runtime.guards import BudgetGuard
+from memory_aware_agent_harness.runtime.rehydration import (
+    CheckpointRehydrationEngine,
+    RehydratedState,
+)
 from memory_aware_agent_harness.runtime.result_builder import RunResultBuilder
 from memory_aware_agent_harness.runtime.state import (
     LifecycleState,
@@ -505,6 +511,60 @@ class AgentRuntime:
                 if self.event_emitter._strict:
                     raise
         return final_run_result
+
+    def restore_from_checkpoint(
+        self,
+        checkpoint_id: CheckpointId,
+        namespace_id: NamespaceId,
+        *,
+        critical_memory_ids: Sequence[MemoryId] = (),
+        conflict_strategy: Literal["refuse", "purge"] = "purge",
+    ) -> tuple[LifecycleState, RehydratedState]:
+        """Restore LifecycleState from checkpoint with anti-resurrection tombstone checks."""
+        if self.storage is None:
+            raise StorageError("Cannot restore from checkpoint without storage configured")
+
+        if hasattr(self.storage, "get_checkpoint_record"):
+            checkpoint_rec = self.storage.get_checkpoint_record(checkpoint_id, namespace_id)
+        else:
+            raw_payload = self.storage.get_checkpoint(checkpoint_id, namespace_id)
+            if raw_payload is None:
+                raise RecordNotFoundError(
+                    f"Checkpoint '{checkpoint_id}' not found",
+                    record_id=str(checkpoint_id),
+                    namespace_id=str(namespace_id),
+                    table="checkpoints",
+                )
+            checkpoint_rec = CheckpointRecord(
+                checkpoint_id=checkpoint_id,
+                run_id=RunId(str(raw_payload.get("run_id", "run_restored"))),
+                step_id=StepId(str(raw_payload.get("step_id", "step_restored"))),
+                branch_id=DEFAULT_BRANCH_ID,
+                namespace_id=namespace_id,
+                parent_checkpoint_id=None,
+                state_payload_json=json.dumps(dict(raw_payload), sort_keys=True),
+                state_hash=compute_state_hash(raw_payload),
+                created_at=self.clock.now(),
+            )
+
+        if checkpoint_rec is None:
+            raise RecordNotFoundError(
+                f"Checkpoint '{checkpoint_id}' not found in namespace '{namespace_id}'",
+                record_id=str(checkpoint_id),
+                namespace_id=str(namespace_id),
+                table="checkpoints",
+            )
+
+        engine = CheckpointRehydrationEngine(self.storage)
+        return engine.rehydrate_lifecycle_state(
+            checkpoint=checkpoint_rec,
+            namespace_id=namespace_id,
+            clock=self.clock,
+            id_generator=self.id_generator,
+            budgets=self.default_budgets,
+            critical_memory_ids=critical_memory_ids,
+            conflict_strategy=conflict_strategy,
+        )
 
     def _execute_step(
         self,
@@ -1039,6 +1099,10 @@ class AgentRuntime:
                 "status": state.status.value,
                 "tokens": state.cumulative_tokens.total_tokens,
             }
+            if "working_memory_ids" in state.metadata:
+                state_payload["working_memory_ids"] = list(state.metadata["working_memory_ids"])
+            if "working_memory" in state.metadata:
+                state_payload["working_memory"] = list(state.metadata["working_memory"])
             state_payload_json = json.dumps(state_payload, sort_keys=True)
             state_hash = compute_state_hash(state_payload)
             checkpoint = CheckpointRecord(

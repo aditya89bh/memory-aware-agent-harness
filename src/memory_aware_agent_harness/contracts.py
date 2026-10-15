@@ -1038,6 +1038,47 @@ class TombstoneActiveError(StorageError):
         self.tombstone_id = tombstone_id
 
 
+class StateResurrectionConflictError(StorageError):
+    """Raised when checkpoint restoration encounters irreconcilable tombstone conflicts."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        conflicting_memory_ids: Sequence[MemoryId] = (),
+        namespace_id: str | None = None,
+        checkpoint_id: str | None = None,
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        d: dict[str, Any] = {}
+        if isinstance(details, FailureDetails):
+            d.update(details.to_dict())
+        elif isinstance(details, Mapping):
+            d.update(details)
+        if conflicting_memory_ids:
+            d["conflicting_memory_ids"] = [str(m) for m in conflicting_memory_ids]
+        if namespace_id is not None:
+            d["namespace_id"] = namespace_id
+        if checkpoint_id is not None:
+            d["checkpoint_id"] = checkpoint_id
+        if "recovery_hint" not in d:
+            d["recovery_hint"] = (
+                "Operator intervention required: tombstoned memory conflict prevents safe "
+                "checkpoint restoration"
+            )
+        super().__init__(
+            message,
+            operation="checkpoint_restore",
+            details=d,
+            recoverable=recoverable,
+        )
+        self.error_code = "STATE_RESURRECTION_CONFLICT"
+        self.conflicting_memory_ids = tuple(conflicting_memory_ids)
+        self.namespace_id = namespace_id
+        self.checkpoint_id = checkpoint_id
+
+
 class StepCommitError(StorageError):
     """Raised when the atomic 4-phase step commit protocol fails and rolls back."""
 
@@ -2635,6 +2676,10 @@ class StoragePort(Protocol):
         """Logically delete and tombstone a memory record with verifiable audit."""
         ...
 
+    def list_tombstoned_memory_ids(self, namespace_id: NamespaceId) -> frozenset[MemoryId]:
+        """Return all tombstoned memory IDs in a namespace for anti-resurrection reconciliation."""
+        ...
+
     def update_optimistic(self, record: MemoryRecord, expected_version: int) -> None:
         """Update a memory record conditionally verifying the expected version."""
         ...
@@ -2805,6 +2850,7 @@ __all__ = [
     "ScoredMemoryItem",
     "SerializableRecord",
     "SideEffectType",
+    "StateResurrectionConflictError",
     "StepCommitError",
     "StepId",
     "StepResult",

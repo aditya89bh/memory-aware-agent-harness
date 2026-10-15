@@ -74,6 +74,9 @@ class _StubScoredStorage(StoragePort):
     def tombstone(self, memory_id: MemoryId, namespace_id: NamespaceId, reason: str) -> None:
         pass
 
+    def list_tombstoned_memory_ids(self, namespace_id: NamespaceId) -> frozenset[MemoryId]:
+        return frozenset()
+
     def update_optimistic(self, record: MemoryRecord, expected_version: int) -> None:
         pass
 
