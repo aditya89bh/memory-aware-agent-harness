@@ -115,11 +115,8 @@ def put_memory(
         if existing_row is not None:
             if existing_row["namespace_id"] != str(record.namespace_id):
                 raise CrossNamespaceAccessError(
-                    f"Memory record '{record.id}' belongs to namespace "
-                    f"'{existing_row['namespace_id']}', cannot mutate under "
-                    f"namespace '{record.namespace_id}'",
+                    "Cross-namespace access denied",
                     requested_namespace=str(record.namespace_id),
-                    target_namespace=str(existing_row["namespace_id"]),
                     resource_id=str(record.id),
                 )
             if record.version < existing_row["version"]:
@@ -262,21 +259,12 @@ def get_memory(
         CrossNamespaceAccessError: If record belongs to a different namespace.
     """
     row = conn.execute(
-        "SELECT * FROM memory_records WHERE memory_id = ?;",
-        (str(memory_id),),
+        "SELECT * FROM memory_records WHERE memory_id = ? AND namespace_id = ?;",
+        (str(memory_id), str(namespace_id)),
     ).fetchone()
 
     if row is None:
         return None
-
-    if row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: memory '{memory_id}' belongs to "
-            f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(row["namespace_id"]),
-            resource_id=str(memory_id),
-        )
 
     if not include_tombstoned:
         if row["state"] in (MemoryState.DELETED.value, MemoryState.EXPIRED.value):
@@ -333,10 +321,8 @@ def update_memory_optimistic(
 
         if row["namespace_id"] != str(record.namespace_id):
             raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: memory '{record.id}' belongs to "
-                f"namespace '{row['namespace_id']}', requested '{record.namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(record.namespace_id),
-                target_namespace=str(row["namespace_id"]),
                 resource_id=str(record.id),
             )
 
@@ -510,10 +496,8 @@ def tombstone_memory(
 
         if row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: memory '{memory_id}' belongs to "
-                f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(row["namespace_id"]),
                 resource_id=str(memory_id),
             )
 
@@ -676,10 +660,8 @@ def hard_delete_memory(
 
         if row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: memory '{memory_id}' belongs to "
-                f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(row["namespace_id"]),
                 resource_id=str(memory_id),
             )
 
@@ -841,40 +823,24 @@ def list_active_memories(
     Returns:
         Tuple of active MemoryRecords ordered by created_at.
     """
-    if as_of is not None:
-        as_of_iso = as_of.astimezone(UTC).isoformat()
-        rows = conn.execute(
-            """
-            SELECT mr.* FROM memory_records mr
-            WHERE mr.namespace_id = ?
-              AND mr.kind = ?
-              AND mr.state = 'active'
-              AND (mr.expires_at IS NULL OR mr.expires_at > ?)
-              AND NOT EXISTS (
-                  SELECT 1 FROM tombstones t
-                  WHERE t.target_memory_id = mr.memory_id
-                    AND t.namespace_id = mr.namespace_id
-              )
-            ORDER BY mr.created_at ASC;
-            """,
-            (str(namespace_id), kind.value, as_of_iso),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT mr.* FROM memory_records mr
-            WHERE mr.namespace_id = ?
-              AND mr.kind = ?
-              AND mr.state = 'active'
-              AND NOT EXISTS (
-                  SELECT 1 FROM tombstones t
-                  WHERE t.target_memory_id = mr.memory_id
-                    AND t.namespace_id = mr.namespace_id
-              )
-            ORDER BY mr.created_at ASC;
-            """,
-            (str(namespace_id), kind.value),
-        ).fetchall()
+    effective_as_of = as_of if as_of is not None else datetime.now(UTC)
+    as_of_iso = effective_as_of.astimezone(UTC).isoformat()
+    rows = conn.execute(
+        """
+        SELECT mr.* FROM memory_records mr
+        WHERE mr.namespace_id = ?
+          AND mr.kind = ?
+          AND mr.state = 'active'
+          AND (mr.expires_at IS NULL OR mr.expires_at > ?)
+          AND NOT EXISTS (
+              SELECT 1 FROM tombstones t
+              WHERE t.target_memory_id = mr.memory_id
+                AND t.namespace_id = mr.namespace_id
+          )
+        ORDER BY mr.created_at ASC;
+        """,
+        (str(namespace_id), kind.value, as_of_iso),
+    ).fetchall()
     return tuple(_row_to_memory_record(r) for r in rows)
 
 
@@ -1035,7 +1001,8 @@ def search_memories_basic(
         limit=limit,
         as_of=as_of,
     )
-    return search_memories(conn, query_filter)
+    scored = search_memories_scored(conn, query_filter, as_of=as_of)
+    return tuple(item.record for item in scored)
 
 
 def search_memories_scored(

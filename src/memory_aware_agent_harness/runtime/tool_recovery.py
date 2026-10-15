@@ -173,8 +173,10 @@ class ToolRecoveryEngine:
             # If previously COMPLETED, replay cached result
             if rec.status == ToolCallStatus.COMPLETED:
                 # Never reuse cached READ_ONLY results across independent runs!
-                if rec.side_effect == SideEffectType.READ_ONLY and (
-                    run_id is None or str(rec.run_id) != str(run_id)
+                if (
+                    rec.side_effect == SideEffectType.READ_ONLY
+                    and run_id is not None
+                    and str(rec.run_id) != str(run_id)
                 ):
                     return None
 

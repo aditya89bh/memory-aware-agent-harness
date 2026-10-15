@@ -114,16 +114,15 @@ def test_run_cross_namespace_access_denied() -> None:
         run = _make_sample_run(run_id="run_alpha", namespace_id="ns_alpha")
         save_run(conn, run)
 
-        # Cross-namespace read is denied
-        with pytest.raises(CrossNamespaceAccessError) as exc_info:
-            get_run(conn, run.run_id, NamespaceId("ns_beta"))
-        assert exc_info.value.requested_namespace == "ns_beta"
-        assert exc_info.value.target_namespace == "ns_alpha"
+        # Cross-namespace read returns None without disclosing existence
+        assert get_run(conn, run.run_id, NamespaceId("ns_beta")) is None
 
-        # Cross-namespace write attempt is denied
+        # Cross-namespace write attempt is denied without target disclosure
         tampered_run = _make_sample_run(run_id="run_alpha", namespace_id="ns_beta")
-        with pytest.raises(CrossNamespaceAccessError):
+        with pytest.raises(CrossNamespaceAccessError) as exc_info:
             save_run(conn, tampered_run)
+        assert exc_info.value.requested_namespace == "ns_beta"
+        assert exc_info.value.target_namespace is None
     finally:
         conn.close()
 
@@ -267,13 +266,11 @@ def test_step_cross_namespace_access_denied() -> None:
         assert fetched_updated.decision is not None
         assert fetched_updated.decision.content == "Updated content"
 
-        # Reading step under wrong namespace raises CrossNamespaceAccessError
-        with pytest.raises(CrossNamespaceAccessError):
-            get_step(conn, StepId("step_01"), NamespaceId("ns_attacker"))
+        # Reading step under wrong namespace returns None without disclosing existence
+        assert get_step(conn, StepId("step_01"), NamespaceId("ns_attacker")) is None
 
-        # Listing steps under wrong namespace raises CrossNamespaceAccessError
-        with pytest.raises(CrossNamespaceAccessError):
-            list_steps_for_run(conn, run.run_id, NamespaceId("ns_attacker"))
+        # Listing steps under wrong namespace returns empty tuple without disclosing existence
+        assert list_steps_for_run(conn, run.run_id, NamespaceId("ns_attacker")) == ()
 
         # Listing steps for nonexistent run returns empty tuple
         assert list_steps_for_run(conn, RunId("missing_run"), NamespaceId("ns_alpha")) == ()

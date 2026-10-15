@@ -334,11 +334,16 @@ def test_runtime_e2e_idempotent_tool_replay_avoids_execution() -> None:
             ]
         )
         runtime1 = AgentRuntime(model=model1, tools=[mock_tool], storage=adapter)
-        res1 = runtime1.run(task="Run 1", namespace_id=ns, run_id=RunId("r_idemp_1"))
+        res1 = runtime1.run(
+            task="Run 1",
+            namespace_id=ns,
+            run_id=RunId("r_idemp_1"),
+            business_operation_id="cfg_v1",
+        )
         assert res1.status == RunStatus.COMPLETED
         assert mock_tool.call_count == 1
 
-        # Run 2: dispatches same tool call with same idempotency_key="cfg_v1"
+        # Run 2: dispatches same tool call with same trusted business_operation_id="cfg_v1"
         decision2 = ModelDecision(
             decision_id="dec_2",
             step_id=StepId("step_1"),
@@ -363,7 +368,12 @@ def test_runtime_e2e_idempotent_tool_replay_avoids_execution() -> None:
             ]
         )
         runtime2 = AgentRuntime(model=model2, tools=[mock_tool], storage=adapter)
-        res2 = runtime2.run(task="Run 2", namespace_id=ns, run_id=RunId("r_idemp_2"))
+        res2 = runtime2.run(
+            task="Run 2",
+            namespace_id=ns,
+            run_id=RunId("r_idemp_2"),
+            business_operation_id="cfg_v1",
+        )
         assert res2.status == RunStatus.COMPLETED
 
         # The tool was NOT executed again; call_count remains 1!

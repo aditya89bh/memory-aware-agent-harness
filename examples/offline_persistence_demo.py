@@ -10,6 +10,8 @@ Demonstrates:
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
+import os
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -68,33 +70,23 @@ class CalculatorTool(ToolProtocol):
         return {"result": 0}
 
 
-def run_offline_persistence_demo(db_path: str | Path | None = None) -> dict[str, Any]:
-    """Execute cross-process persistence demonstration.
+DEMO_NAMESPACE = NamespaceId("demo_tenant")
+DEMO_RUN_ID = RunId("run_cross_proc_demo")
 
-    Args:
-        db_path: Path to target SQLite database. Created if missing.
 
-    Returns:
-        Structured dictionary summarizing demonstration results.
-    """
-    if db_path is None:
-        temp_dir = tempfile.mkdtemp(prefix="agent_demo_")
-        target_path = Path(temp_dir) / "offline_agent.db"
-    else:
-        target_path = Path(db_path)
-
-    ns = NamespaceId("demo_tenant")
-    run_id = RunId("run_cross_proc_demo")
+def _run_phase1_worker(db_path: str, result_queue: mp.Queue[dict[str, Any]]) -> None:
+    """Worker process executing Phase 1 in an isolated OS process."""
+    pid = os.getpid()
+    print(f"\n--- Phase 1: Process A (PID {pid}) Execution on {db_path} ---")
     clock = DeterministicClock(start_time=datetime(2026, 10, 15, 12, 0, 0, tzinfo=UTC))
     calc_tool = CalculatorTool()
 
-    print(f"\n--- Phase 1: Process A Execution on {target_path} ---")
-    with SQLiteStorageAdapter(str(target_path), clock=clock.now) as storage_a:
+    with SQLiteStorageAdapter(db_path, clock=clock.now) as storage_a:
         # 1. Seed semantic knowledge base
         now = clock.now()
         seed_record = MemoryRecord(
             id=MemoryId("mem_seed_pref"),
-            namespace_id=ns,
+            namespace_id=DEMO_NAMESPACE,
             kind=MemoryKind.SEMANTIC,
             content="Preferred operational mode: batch arithmetic aggregation.",
             state=MemoryState.ACTIVE,
@@ -105,7 +97,7 @@ def run_offline_persistence_demo(db_path: str | Path | None = None) -> dict[str,
             origin=MemoryOrigin.AGENT_OBSERVATION,
         )
         storage_a.put(seed_record)
-        print(f"[Process A] Seeded semantic memory: {seed_record.id}")
+        print(f"[Process A - PID {pid}] Seeded semantic memory: {seed_record.id}")
 
         # 2. Setup runtime and execute Step 1
         dec1 = ModelDecision(
@@ -136,35 +128,49 @@ def run_offline_persistence_demo(db_path: str | Path | None = None) -> dict[str,
             clock=clock,
         )
 
-        res_a = runtime_a.run("Add 150 and 350", namespace_id=ns, run_id=run_id)
-        print(f"[Process A] Run execution completed with status: {res_a.status.value}")
-        print(f"[Process A] Steps recorded: {res_a.step_count}")
+        res_a = runtime_a.run("Add 150 and 350", namespace_id=DEMO_NAMESPACE, run_id=DEMO_RUN_ID)
+        print(f"[Process A - PID {pid}] Run execution completed with status: {res_a.status.value}")
+        print(f"[Process A - PID {pid}] Steps recorded: {res_a.step_count}")
 
-    print("[Process A] Disconnected and closed SQLite WAL storage.\n")
+    print(f"[Process A - PID {pid}] Disconnected and closed SQLite WAL storage.\n")
+    result_queue.put(
+        {
+            "pid": pid,
+            "final_status": res_a.status.value,
+            "step_count": res_a.step_count,
+        }
+    )
 
-    print(f"--- Phase 2: Process B Resuming from {target_path} ---")
-    with SQLiteStorageAdapter(str(target_path), clock=clock.now) as storage_b:
+
+def _run_phase2_worker(db_path: str, result_queue: mp.Queue[dict[str, Any]]) -> None:
+    """Worker process executing Phase 2 in a separate isolated OS process."""
+    pid = os.getpid()
+    print(f"--- Phase 2: Process B (PID {pid}) Resuming from {db_path} ---")
+    clock = DeterministicClock(start_time=datetime(2026, 10, 15, 12, 0, 0, tzinfo=UTC))
+    calc_tool = CalculatorTool()
+
+    with SQLiteStorageAdapter(db_path, clock=clock.now) as storage_b:
         # 1. Inspect persisted memories
-        active_mems = storage_b.list_active(ns, kind=MemoryKind.SEMANTIC)
-        print(f"[Process B] Recovered {len(active_mems)} active memories from storage.")
+        active_mems = storage_b.list_active(DEMO_NAMESPACE, kind=MemoryKind.SEMANTIC)
+        print(f"[Process B - PID {pid}] Recovered {len(active_mems)} active memories from storage.")
 
         # 2. Retrieve checkpoint and verify SHA-256 state hash integrity
-        latest_cp = storage_b.get_latest_checkpoint(run_id, ns)
+        latest_cp = storage_b.get_latest_checkpoint(DEMO_RUN_ID, DEMO_NAMESPACE)
         if latest_cp is None:
-            raise RuntimeError(f"Expected latest checkpoint for {run_id}")
+            raise RuntimeError(f"Expected latest checkpoint for {DEMO_RUN_ID}")
 
-        print(f"[Session B] Found checkpoint: {latest_cp.checkpoint_id}")
-        print(f"[Session B] Stored State Hash: {latest_cp.state_hash}")
+        print(f"[Process B - PID {pid}] Found checkpoint: {latest_cp.checkpoint_id}")
+        print(f"[Process B - PID {pid}] Stored State Hash: {latest_cp.state_hash}")
 
         # Deterministic SHA-256 state hash verification via get_checkpoint_record
         verified_cp = storage_b.get_checkpoint_record(
             latest_cp.checkpoint_id,
-            ns,
+            DEMO_NAMESPACE,
             verify_hash=True,
         )
         if verified_cp is None:
             raise RuntimeError("Failed to retrieve or verify checkpoint")
-        print("[Session B] Checkpoint SHA-256 state hash verification: PASSED")
+        print(f"[Process B - PID {pid}] Checkpoint SHA-256 state hash verification: PASSED")
 
         # 3. Restore agent state into new runtime instance
         runtime_b = AgentRuntime(
@@ -175,28 +181,82 @@ def run_offline_persistence_demo(db_path: str | Path | None = None) -> dict[str,
         )
         restored_state, rehydrated_info = runtime_b.restore_from_checkpoint(
             latest_cp.checkpoint_id,
-            ns,
+            DEMO_NAMESPACE,
         )
-        print(f"[Process B] Successfully restored state. Step Count: {restored_state.step_count}")
         print(
-            f"[Process B] Rehydrated working memory purged count: "
+            f"[Process B - PID {pid}] Successfully restored state. "
+            f"Step Count: {restored_state.step_count}"
+        )
+        print(
+            f"[Process B - PID {pid}] Rehydrated working memory purged count: "
             f"{rehydrated_info.active_tombstones_count}"
         )
 
         # 4. Audit trace events log
-        trace_events = storage_b.get_trace_events(run_id, ns)
-        print(f"[Process B] Verified {len(trace_events)} sequenced trace audit events in WAL.")
+        trace_events = storage_b.get_trace_events(DEMO_RUN_ID, DEMO_NAMESPACE)
+        print(
+            f"[Process B - PID {pid}] Verified {len(trace_events)} "
+            "sequenced trace audit events in WAL."
+        )
 
-    print("\n--- Demonstration Finished Successfully ---")
+    print(f"\n--- Process B (PID {pid}) Demonstration Finished Successfully ---")
+    result_queue.put(
+        {
+            "pid": pid,
+            "checkpoint_id": str(latest_cp.checkpoint_id),
+            "state_hash": latest_cp.state_hash,
+            "restored_step_count": restored_state.step_count,
+            "trace_events_count": len(trace_events),
+        }
+    )
+
+
+def run_offline_persistence_demo(db_path: str | Path | None = None) -> dict[str, Any]:
+    """Execute cross-process persistence demonstration across separate OS processes.
+
+    Args:
+        db_path: Path to target SQLite database. Created if missing.
+
+    Returns:
+        Structured dictionary summarizing demonstration results.
+    """
+    if db_path is None:
+        temp_dir = tempfile.mkdtemp(prefix="agent_demo_")
+        target_path = Path(temp_dir) / "offline_agent.db"
+    else:
+        target_path = Path(db_path)
+
+    ctx = mp.get_context("spawn")
+
+    queue1: mp.Queue[dict[str, Any]] = ctx.Queue()
+    p1 = ctx.Process(target=_run_phase1_worker, args=(str(target_path), queue1))
+    p1.start()
+    p1.join(timeout=30.0)
+    if p1.exitcode != 0:
+        raise RuntimeError(f"Process A failed with exit code {p1.exitcode}")
+    res1 = queue1.get_nowait()
+
+    queue2: mp.Queue[dict[str, Any]] = ctx.Queue()
+    p2 = ctx.Process(target=_run_phase2_worker, args=(str(target_path), queue2))
+    p2.start()
+    p2.join(timeout=30.0)
+    if p2.exitcode != 0:
+        raise RuntimeError(f"Process B failed with exit code {p2.exitcode}")
+    res2 = queue2.get_nowait()
+
+    assert res1["pid"] != res2["pid"], "Phase 1 and Phase 2 must run in distinct OS processes"
+
     return {
         "db_path": str(target_path),
-        "run_id": str(run_id),
-        "namespace_id": str(ns),
-        "checkpoint_id": str(latest_cp.checkpoint_id),
-        "state_hash": latest_cp.state_hash,
-        "restored_step_count": restored_state.step_count,
-        "final_status": res_a.status.value,
-        "trace_events_count": len(trace_events),
+        "run_id": str(DEMO_RUN_ID),
+        "namespace_id": str(DEMO_NAMESPACE),
+        "checkpoint_id": res2["checkpoint_id"],
+        "state_hash": res2["state_hash"],
+        "restored_step_count": res2["restored_step_count"],
+        "final_status": res1["final_status"],
+        "trace_events_count": res2["trace_events_count"],
+        "process_a_pid": res1["pid"],
+        "process_b_pid": res2["pid"],
     }
 
 

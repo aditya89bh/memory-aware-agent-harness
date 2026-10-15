@@ -21,7 +21,6 @@ from typing import Any
 import pytest
 
 from memory_aware_agent_harness.contracts import (
-    CrossNamespaceAccessError,
     DirtyRollbackError,
     ModelDecision,
     ModelFinishReason,
@@ -410,9 +409,8 @@ def test_cross_run_and_cross_namespace_key_reuse() -> None:
         assert cached_b is None, "Tenant B must never receive Tenant A's cached tool result"
 
         # 3. Direct attempt to fetch Tenant A's invocation ID under Tenant B
-        # raises CrossNamespaceAccessError
-        with pytest.raises(CrossNamespaceAccessError):
-            adapter.get_tool_invocation_record(inv_a, ns_tenant_b)
+        # returns None (no existence disclosure across namespaces)
+        assert adapter.get_tool_invocation_record(inv_a, ns_tenant_b) is None
 
 
 # =================================================================================================

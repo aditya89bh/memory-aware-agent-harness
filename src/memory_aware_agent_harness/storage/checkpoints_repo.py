@@ -125,10 +125,8 @@ def save_checkpoint(
 
         if run_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Parent run '{run_id}' belongs to namespace '{run_row['namespace_id']}', "
-                f"cannot save checkpoint under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(run_row["namespace_id"]),
                 resource_id=str(run_id),
             )
 
@@ -148,10 +146,8 @@ def save_checkpoint(
 
         if step_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Parent step '{step_id}' belongs to namespace '{step_row['namespace_id']}', "
-                f"cannot save checkpoint under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(step_row["namespace_id"]),
                 resource_id=str(step_id),
             )
 
@@ -182,11 +178,8 @@ def save_checkpoint(
 
             if parent_row["namespace_id"] != str(namespace_id):
                 raise CrossNamespaceAccessError(
-                    f"Parent checkpoint '{parent_checkpoint_id}' belongs to namespace "
-                    f"'{parent_row['namespace_id']}', cannot reference under "
-                    f"namespace '{namespace_id}'",
+                    "Cross-namespace access denied",
                     requested_namespace=str(namespace_id),
-                    target_namespace=str(parent_row["namespace_id"]),
                     resource_id=str(parent_checkpoint_id),
                 )
 
@@ -204,10 +197,8 @@ def save_checkpoint(
 
         if existing_row is not None and existing_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Checkpoint '{checkpoint_id}' belongs to namespace "
-                f"'{existing_row['namespace_id']}', cannot mutate under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(existing_row["namespace_id"]),
                 resource_id=str(checkpoint_id),
             )
 
@@ -302,21 +293,12 @@ def get_checkpoint(
         ReplayDivergenceError: If verify_hash is True and payload hash differs from state_hash.
     """
     row = conn.execute(
-        "SELECT * FROM checkpoints WHERE checkpoint_id = ?;",
-        (str(checkpoint_id),),
+        "SELECT * FROM checkpoints WHERE checkpoint_id = ? AND namespace_id = ?;",
+        (str(checkpoint_id), str(namespace_id)),
     ).fetchone()
 
     if row is None:
         return None
-
-    if row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: checkpoint '{checkpoint_id}' belongs to "
-            f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(row["namespace_id"]),
-            resource_id=str(checkpoint_id),
-        )
 
     record = CheckpointRecord.from_row(row)
     if verify_hash:
@@ -335,21 +317,12 @@ def get_latest_checkpoint(
 ) -> CheckpointRecord | None:
     """Retrieve the latest checkpoint for a run branch with namespace verification."""
     run_row = conn.execute(
-        "SELECT namespace_id FROM runs WHERE run_id = ?;",
-        (str(run_id),),
+        "SELECT namespace_id FROM runs WHERE run_id = ? AND namespace_id = ?;",
+        (str(run_id), str(namespace_id)),
     ).fetchone()
 
     if run_row is None:
         return None
-
-    if run_row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: run '{run_id}' belongs to "
-            f"namespace '{run_row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(run_row["namespace_id"]),
-            resource_id=str(run_id),
-        )
 
     row = conn.execute(
         """
@@ -378,21 +351,12 @@ def list_checkpoints_for_run(
 ) -> tuple[CheckpointRecord, ...]:
     """List checkpoints for a run ordered by created_at."""
     run_row = conn.execute(
-        "SELECT namespace_id FROM runs WHERE run_id = ?;",
-        (str(run_id),),
+        "SELECT namespace_id FROM runs WHERE run_id = ? AND namespace_id = ?;",
+        (str(run_id), str(namespace_id)),
     ).fetchone()
 
     if run_row is None:
         return ()
-
-    if run_row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: run '{run_id}' belongs to "
-            f"namespace '{run_row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(run_row["namespace_id"]),
-            resource_id=str(run_id),
-        )
 
     if branch_id is not None:
         rows = conn.execute(

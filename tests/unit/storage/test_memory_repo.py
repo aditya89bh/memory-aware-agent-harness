@@ -216,7 +216,7 @@ def test_list_active_memories_filtering_and_ttl() -> None:
     try:
         apply_migrations(conn)
         ns = NamespaceId("ns_alpha")
-        now = datetime(2026, 10, 14, 12, 0, 0, tzinfo=UTC)
+        now = datetime.now(UTC)
 
         # Active memory with no expiration
         mem_active = _make_sample_memory(
@@ -261,12 +261,12 @@ def test_list_active_memories_filtering_and_ttl() -> None:
         put_memory(conn, mem_tombstoned)
         tombstone_memory(conn, mem_tombstoned.id, ns, reason="Superseded")
 
-        # 1. list_active_memories without as_of returns non-tombstoned semantic memories
+        # 1. list_active_memories without as_of enforces TTL by default
         active_no_ttl = list_active_memories(conn, ns, MemoryKind.SEMANTIC)
         ids_no_ttl = [m.id for m in active_no_ttl]
         assert MemoryId("m_active") in ids_no_ttl
         assert MemoryId("m_future") in ids_no_ttl
-        assert MemoryId("m_expired") in ids_no_ttl
+        assert MemoryId("m_expired") not in ids_no_ttl
         assert MemoryId("m_tomb") not in ids_no_ttl
         assert MemoryId("m_episodic") not in ids_no_ttl
 
@@ -287,9 +287,8 @@ def test_memory_cross_namespace_access_denied() -> None:
         mem_a = _make_sample_memory(memory_id="mem_a", namespace_id="ns_alpha")
         put_memory(conn, mem_a)
 
-        # 1. Cross-namespace read
-        with pytest.raises(CrossNamespaceAccessError):
-            get_memory(conn, mem_a.id, NamespaceId("ns_beta"))
+        # 1. Cross-namespace read returns None without disclosing existence
+        assert get_memory(conn, mem_a.id, NamespaceId("ns_beta")) is None
 
         # 2. Cross-namespace put attempt with existing memory_id in another namespace
         tampered_put = _make_sample_memory(memory_id="mem_a", namespace_id="ns_beta")

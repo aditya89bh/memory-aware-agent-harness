@@ -64,11 +64,8 @@ def save_run(
 
         if row is not None and row["namespace_id"] != str(run_result.namespace_id):
             raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: run '{run_result.run_id}' belongs to "
-                f"namespace '{row['namespace_id']}', cannot mutate under "
-                f"namespace '{run_result.namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(run_result.namespace_id),
-                target_namespace=str(row["namespace_id"]),
                 resource_id=str(run_result.run_id),
             )
 
@@ -159,21 +156,12 @@ def get_run(
         CrossNamespaceAccessError: If the run belongs to a different namespace.
     """
     row = conn.execute(
-        "SELECT * FROM runs WHERE run_id = ?;",
-        (str(run_id),),
+        "SELECT * FROM runs WHERE run_id = ? AND namespace_id = ?;",
+        (str(run_id), str(namespace_id)),
     ).fetchone()
 
     if row is None:
         return None
-
-    if row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: run '{run_id}' belongs to "
-            f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(row["namespace_id"]),
-            resource_id=str(run_id),
-        )
 
     # Fetch steps
     steps = list_steps_for_run(conn, run_id, namespace_id)
@@ -246,10 +234,8 @@ def save_step(
 
         if run_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Parent run '{step_result.run_id}' belongs to namespace "
-                f"'{run_row['namespace_id']}', cannot write step under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(run_row["namespace_id"]),
                 resource_id=str(step_result.run_id),
             )
 
@@ -260,10 +246,8 @@ def save_step(
 
         if step_row is not None and step_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Step '{step_result.step_id}' belongs to namespace '{step_row['namespace_id']}', "
-                f"cannot mutate under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(step_row["namespace_id"]),
                 resource_id=str(step_result.step_id),
             )
 
@@ -361,10 +345,8 @@ def record_step_start(
 
         if run_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Parent run '{run_id}' belongs to namespace '{run_row['namespace_id']}', "
-                f"cannot write step under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(run_row["namespace_id"]),
                 resource_id=str(run_id),
             )
 
@@ -398,21 +380,12 @@ def get_step(
 ) -> StepResult | None:
     """Retrieve a step result by ID, validating tenant namespace scoping."""
     row = conn.execute(
-        "SELECT * FROM run_steps WHERE step_id = ?;",
-        (str(step_id),),
+        "SELECT * FROM run_steps WHERE step_id = ? AND namespace_id = ?;",
+        (str(step_id), str(namespace_id)),
     ).fetchone()
 
     if row is None:
         return None
-
-    if row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: step '{step_id}' belongs to "
-            f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(row["namespace_id"]),
-            resource_id=str(step_id),
-        )
 
     return StepResult.from_json(row["step_result_json"])
 
@@ -424,21 +397,12 @@ def list_steps_for_run(
 ) -> tuple[StepResult, ...]:
     """List all steps for a run ordered by step_number, verifying namespace scoping."""
     run_row = conn.execute(
-        "SELECT namespace_id FROM runs WHERE run_id = ?;",
-        (str(run_id),),
+        "SELECT namespace_id FROM runs WHERE run_id = ? AND namespace_id = ?;",
+        (str(run_id), str(namespace_id)),
     ).fetchone()
 
     if run_row is None:
         return ()
-
-    if run_row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: run '{run_id}' belongs to "
-            f"namespace '{run_row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(run_row["namespace_id"]),
-            resource_id=str(run_id),
-        )
 
     rows = conn.execute(
         """
@@ -484,10 +448,8 @@ def update_run_status(
 
         if row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: run '{run_id}' belongs to "
-                f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(row["namespace_id"]),
                 resource_id=str(run_id),
             )
 
@@ -637,10 +599,8 @@ def fail_orphaned_step(
 
         if row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: step '{step_id}' belongs to "
-                f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(row["namespace_id"]),
                 resource_id=str(step_id),
             )
 

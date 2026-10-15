@@ -125,10 +125,8 @@ def append_trace_event(
 
         if run_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Parent run '{run_id}' belongs to namespace '{run_row['namespace_id']}', "
-                f"cannot append trace event under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(run_row["namespace_id"]),
                 resource_id=str(run_id),
             )
 
@@ -149,10 +147,8 @@ def append_trace_event(
 
             if step_row["namespace_id"] != str(namespace_id):
                 raise CrossNamespaceAccessError(
-                    f"Parent step '{step_id}' belongs to namespace '{step_row['namespace_id']}', "
-                    f"cannot append trace event under namespace '{namespace_id}'",
+                    "Cross-namespace access denied",
                     requested_namespace=str(namespace_id),
-                    target_namespace=str(step_row["namespace_id"]),
                     resource_id=str(step_id),
                 )
 
@@ -170,10 +166,8 @@ def append_trace_event(
 
         if existing_row is not None and existing_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Trace event '{event_id}' belongs to namespace "
-                f"'{existing_row['namespace_id']}', cannot mutate under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(existing_row["namespace_id"]),
                 resource_id=str(event_id),
             )
 
@@ -251,21 +245,12 @@ def get_trace_event(
 ) -> TraceEventRecord | None:
     """Retrieve a single trace event by ID with namespace scoping and integrity verification."""
     row = conn.execute(
-        "SELECT * FROM trace_events WHERE event_id = ?;",
-        (str(event_id),),
+        "SELECT * FROM trace_events WHERE event_id = ? AND namespace_id = ?;",
+        (str(event_id), str(namespace_id)),
     ).fetchone()
 
     if row is None:
         return None
-
-    if row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: trace event '{event_id}' belongs to "
-            f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(row["namespace_id"]),
-            resource_id=str(event_id),
-        )
 
     record = TraceEventRecord.from_row(row)
     if verify_hash:
@@ -285,21 +270,12 @@ def get_trace_events(
 ) -> tuple[TraceEventRecord, ...]:
     """Retrieve trace events for a run ordered monotonically by sequence_num."""
     run_row = conn.execute(
-        "SELECT namespace_id FROM runs WHERE run_id = ?;",
-        (str(run_id),),
+        "SELECT namespace_id FROM runs WHERE run_id = ? AND namespace_id = ?;",
+        (str(run_id), str(namespace_id)),
     ).fetchone()
 
     if run_row is None:
         return ()
-
-    if run_row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: run '{run_id}' belongs to "
-            f"namespace '{run_row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(run_row["namespace_id"]),
-            resource_id=str(run_id),
-        )
 
     if limit is not None:
         rows = conn.execute(

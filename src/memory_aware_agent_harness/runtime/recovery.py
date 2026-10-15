@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from memory_aware_agent_harness.contracts import (
+    CrossNamespaceAccessError,
     DirtyRollbackError,
     FailureDetails,
     HarnessError,
@@ -200,6 +201,26 @@ def reconcile_orphaned_run(
         raise ValueError(f"Unknown recovery strategy '{strategy}', expected 'fail' or 'pause'")
 
     with transaction(conn):
+        row = conn.execute(
+            "SELECT namespace_id FROM runs WHERE run_id = ?;",
+            (str(run_id),),
+        ).fetchone()
+
+        if row is None:
+            raise RecordNotFoundError(
+                f"Run '{run_id}' not found in namespace '{namespace_id}'",
+                record_id=str(run_id),
+                namespace_id=str(namespace_id),
+                table="runs",
+            )
+
+        if row["namespace_id"] != str(namespace_id):
+            raise CrossNamespaceAccessError(
+                "Cross-namespace access denied",
+                requested_namespace=str(namespace_id),
+                resource_id=str(run_id),
+            )
+
         run = get_run(conn, run_id, namespace_id)
         if run is None:
             raise RecordNotFoundError(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -219,7 +220,6 @@ def test_agent_runtime_deterministic_replay_produces_identical_json() -> None:
     """Injectable clock and doubles produce bit-for-bit identical RunResult.to_json()."""
     from collections.abc import Mapping
     from datetime import UTC, datetime
-    from typing import Any
 
     from memory_aware_agent_harness.contracts import (
         SideEffectType,
@@ -340,3 +340,50 @@ def test_strict_diagnostic_listener_on_run_terminated_is_logged(
         "Diagnostic listener error during RUN_TERMINATED dispatch" in record.message
         for record in caplog.records
     )
+
+
+def test_mandatory_trace_persistence_failure_fails_run() -> None:
+    """If trace persistence fails, run must transition to FAILED with TRACE_PERSISTENCE_FAILURE."""
+    from unittest.mock import MagicMock
+
+    mock_storage = MagicMock()
+    mock_storage.append_trace_event.side_effect = RuntimeError("Disk full")
+
+    runtime = AgentRuntime(
+        model=FakeModelAdapter(),
+        storage=mock_storage,
+        strict_diagnostics=False,
+    )
+    result = runtime.run(
+        "Task with failing trace storage", namespace_id=NamespaceId("ns_trace_fail")
+    )
+
+    assert result.status == RunStatus.FAILED
+    assert result.failure_details is not None
+    assert result.failure_details.error_code == "TRACE_PERSISTENCE_FAILURE"
+    assert "Disk full" in result.failure_details.message
+
+
+def test_mandatory_save_run_persistence_failure_fails_run() -> None:
+    """If terminal run save fails, transition to FAILED with STORAGE_PERSISTENCE_FAILURE."""
+    from unittest.mock import MagicMock
+
+    mock_storage = MagicMock()
+
+    def mock_save_run(res: Any) -> None:
+        if getattr(res, "status", None) == RunStatus.COMPLETED:
+            raise RuntimeError("IO error saving terminal run")
+
+    mock_storage.save_run.side_effect = mock_save_run
+
+    runtime = AgentRuntime(
+        model=FakeModelAdapter(),
+        storage=mock_storage,
+        strict_diagnostics=False,
+    )
+    result = runtime.run("Task with failing save_run", namespace_id=NamespaceId("ns_save_fail"))
+
+    assert result.status == RunStatus.FAILED
+    assert result.failure_details is not None
+    assert result.failure_details.error_code == "STORAGE_PERSISTENCE_FAILURE"
+    assert "IO error saving terminal run" in result.failure_details.message

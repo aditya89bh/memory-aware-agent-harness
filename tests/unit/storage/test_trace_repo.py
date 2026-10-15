@@ -291,13 +291,11 @@ def test_trace_cross_namespace_access_denied() -> None:
                 payload={},
             )
 
-        # 4. Cross-namespace get_trace_event
-        with pytest.raises(CrossNamespaceAccessError):
-            get_trace_event(conn, ev_a.event_id, ns_b)
+        # 4. Cross-namespace get_trace_event returns None (no existence disclosure)
+        assert get_trace_event(conn, ev_a.event_id, ns_b) is None
 
-        # 5. Cross-namespace get_trace_events
-        with pytest.raises(CrossNamespaceAccessError):
-            get_trace_events(conn, run_a, ns_b)
+        # 5. Cross-namespace get_trace_events returns empty tuple
+        assert get_trace_events(conn, run_a, ns_b) == ()
 
         # 6. Nonexistent resources raise RecordNotFoundError
         with pytest.raises(RecordNotFoundError):

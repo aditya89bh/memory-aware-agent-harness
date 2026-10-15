@@ -334,9 +334,8 @@ def test_tools_cross_namespace_access_denied() -> None:
                 side_effect=SideEffectType.READ_ONLY,
             )
 
-        # 4. Cross-namespace get_tool_invocation
-        with pytest.raises(CrossNamespaceAccessError):
-            get_tool_invocation(conn, inv_a, ns_beta)
+        # 4. Cross-namespace get_tool_invocation returns None (no existence disclosure)
+        assert get_tool_invocation(conn, inv_a, ns_beta) is None
 
         # 5. Cross-namespace record_tool_result
         tr = ToolResult(
@@ -347,20 +346,22 @@ def test_tools_cross_namespace_access_denied() -> None:
             idempotency_key="key_a",
             result={},
         )
-        with pytest.raises(CrossNamespaceAccessError):
+        with pytest.raises(CrossNamespaceAccessError) as exc_info:
             record_tool_result(conn, invocation_id=inv_a, namespace_id=ns_beta, tool_result=tr)
+        assert exc_info.value.target_namespace is None
+        assert str(ns_alpha) not in str(exc_info.value)
 
         # 6. Cross-namespace mark_invocation_unknown
-        with pytest.raises(CrossNamespaceAccessError):
+        with pytest.raises(CrossNamespaceAccessError) as exc_info:
             mark_invocation_unknown(conn, inv_a, ns_beta)
+        assert exc_info.value.target_namespace is None
+        assert str(ns_alpha) not in str(exc_info.value)
 
-        # 7. Cross-namespace list_invocations_for_step
-        with pytest.raises(CrossNamespaceAccessError):
-            list_invocations_for_step(conn, step_alpha, ns_beta)
+        # 7. Cross-namespace list_invocations_for_step returns empty tuple
+        assert list_invocations_for_step(conn, step_alpha, ns_beta) == ()
 
-        # 8. Cross-namespace find_pending_or_unknown_invocations with wrong run_id
-        with pytest.raises(CrossNamespaceAccessError):
-            find_pending_or_unknown_invocations(conn, ns_beta, run_id=run_alpha)
+        # 8. Cross-namespace find_pending_or_unknown_invocations returns empty tuple
+        assert find_pending_or_unknown_invocations(conn, ns_beta, run_id=run_alpha) == ()
 
         # 9. Nonexistent resources raise RecordNotFoundError
         with pytest.raises(RecordNotFoundError):

@@ -180,10 +180,8 @@ def record_tool_intent(
 
         if run_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Parent run '{run_id}' belongs to namespace '{run_row['namespace_id']}', "
-                f"cannot record tool intent under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(run_row["namespace_id"]),
                 resource_id=str(run_id),
             )
 
@@ -203,10 +201,8 @@ def record_tool_intent(
 
         if step_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Parent step '{step_id}' belongs to namespace '{step_row['namespace_id']}', "
-                f"cannot record tool intent under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(step_row["namespace_id"]),
                 resource_id=str(step_id),
             )
 
@@ -224,10 +220,8 @@ def record_tool_intent(
 
         if inv_row is not None and inv_row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Tool invocation '{invocation_id}' belongs to namespace "
-                f"'{inv_row['namespace_id']}', cannot mutate under namespace '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(inv_row["namespace_id"]),
                 resource_id=str(invocation_id),
             )
 
@@ -430,10 +424,8 @@ def record_tool_result(
 
         if row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: tool invocation '{invocation_id}' belongs to "
-                f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(row["namespace_id"]),
                 resource_id=str(invocation_id),
             )
 
@@ -502,10 +494,8 @@ def mark_invocation_unknown(
 
         if row["namespace_id"] != str(namespace_id):
             raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: tool invocation '{invocation_id}' belongs to "
-                f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
+                "Cross-namespace access denied",
                 requested_namespace=str(namespace_id),
-                target_namespace=str(row["namespace_id"]),
                 resource_id=str(invocation_id),
             )
 
@@ -547,22 +537,13 @@ def get_tool_invocation(
         SELECT ti.*, rs.run_id
         FROM tool_invocations ti
         JOIN run_steps rs ON ti.step_id = rs.step_id
-        WHERE ti.invocation_id = ?;
+        WHERE ti.invocation_id = ? AND ti.namespace_id = ?;
         """,
-        (str(invocation_id),),
+        (str(invocation_id), str(namespace_id)),
     ).fetchone()
 
     if row is None:
         return None
-
-    if row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: tool invocation '{invocation_id}' belongs to "
-            f"namespace '{row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(row["namespace_id"]),
-            resource_id=str(invocation_id),
-        )
 
     return ToolInvocationRecord.from_row(row)
 
@@ -610,21 +591,12 @@ def list_invocations_for_step(
 ) -> tuple[ToolInvocationRecord, ...]:
     """List all tool invocations for a step with namespace verification."""
     step_row = conn.execute(
-        "SELECT namespace_id FROM run_steps WHERE step_id = ?;",
-        (str(step_id),),
+        "SELECT namespace_id FROM run_steps WHERE step_id = ? AND namespace_id = ?;",
+        (str(step_id), str(namespace_id)),
     ).fetchone()
 
     if step_row is None:
         return ()
-
-    if step_row["namespace_id"] != str(namespace_id):
-        raise CrossNamespaceAccessError(
-            f"Cross-namespace access denied: step '{step_id}' belongs to "
-            f"namespace '{step_row['namespace_id']}', requested '{namespace_id}'",
-            requested_namespace=str(namespace_id),
-            target_namespace=str(step_row["namespace_id"]),
-            resource_id=str(step_id),
-        )
 
     rows = conn.execute(
         """
@@ -648,21 +620,12 @@ def find_pending_or_unknown_invocations(
     """Find all pending or outcome-unknown tool invocations within a namespace."""
     if run_id is not None:
         run_row = conn.execute(
-            "SELECT namespace_id FROM runs WHERE run_id = ?;",
-            (str(run_id),),
+            "SELECT namespace_id FROM runs WHERE run_id = ? AND namespace_id = ?;",
+            (str(run_id), str(namespace_id)),
         ).fetchone()
 
         if run_row is None:
             return ()
-
-        if run_row["namespace_id"] != str(namespace_id):
-            raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: run '{run_id}' belongs to "
-                f"namespace '{run_row['namespace_id']}', requested '{namespace_id}'",
-                requested_namespace=str(namespace_id),
-                target_namespace=str(run_row["namespace_id"]),
-                resource_id=str(run_id),
-            )
 
         rows = conn.execute(
             """
@@ -701,19 +664,11 @@ def find_uncertain_invocation_by_fingerprint(
     """Find the most recent pending or outcome-unknown invocation matching fingerprint."""
     if run_id is not None:
         run_row = conn.execute(
-            "SELECT namespace_id FROM runs WHERE run_id = ?;",
-            (str(run_id),),
+            "SELECT namespace_id FROM runs WHERE run_id = ? AND namespace_id = ?;",
+            (str(run_id), str(namespace_id)),
         ).fetchone()
         if run_row is None:
             return None
-        if run_row["namespace_id"] != str(namespace_id):
-            raise CrossNamespaceAccessError(
-                f"Cross-namespace access denied: run '{run_id}' belongs to "
-                f"namespace '{run_row['namespace_id']}', requested '{namespace_id}'",
-                requested_namespace=str(namespace_id),
-                target_namespace=str(run_row["namespace_id"]),
-                resource_id=str(run_id),
-            )
         rows = conn.execute(
             """
             SELECT ti.*, rs.run_id

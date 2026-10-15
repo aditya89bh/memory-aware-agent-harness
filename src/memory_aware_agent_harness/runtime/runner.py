@@ -6,6 +6,7 @@ model decision dispatching, 8-phase step lifecycle execution, and canonical resu
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -88,6 +89,35 @@ from memory_aware_agent_harness.storage.checkpoints_repo import (
 from memory_aware_agent_harness.storage.tools_repo import compute_argument_fingerprint
 
 logger = logging.getLogger(__name__)
+
+
+class _StorageTraceCollector(RuntimeEventListener):
+    """Event listener that synchronously records runtime events as trace events in storage."""
+
+    def __init__(self, st: StoragePort, ns: NamespaceId) -> None:
+        self._st = st
+        self._ns = ns
+        self.last_error: Exception | None = None
+
+    def on_event(self, event: RuntimeEvent) -> None:
+        try:
+            self._st.append_trace_event(
+                event_id=event.event_id,
+                run_id=event.run_id,
+                namespace_id=self._ns,
+                sequence_num=event.sequence_number,
+                event_type=(
+                    event.event_type.value
+                    if hasattr(event.event_type, "value")
+                    else str(event.event_type)
+                ),
+                payload=event.payload,
+                emitted_at=event.timestamp,
+                step_id=event.step_id,
+            )
+        except Exception as exc:
+            self.last_error = exc
+            raise
 
 
 def compile_execution_prompt(
@@ -310,31 +340,8 @@ class AgentRuntime:
         result_builder = RunResultBuilder(state)
         final_output: str | None = None
 
-        trace_collector: RuntimeEventListener | None = None
+        trace_collector: _StorageTraceCollector | None = None
         if self.storage is not None:
-
-            class _StorageTraceCollector:
-                def __init__(self, st: StoragePort, ns: NamespaceId) -> None:
-                    self._st = st
-                    self._ns = ns
-
-                def on_event(self, event: RuntimeEvent) -> None:
-                    with suppress(Exception):
-                        self._st.append_trace_event(
-                            event_id=event.event_id,
-                            run_id=event.run_id,
-                            namespace_id=self._ns,
-                            sequence_num=event.sequence_number,
-                            event_type=(
-                                event.event_type.value
-                                if hasattr(event.event_type, "value")
-                                else str(event.event_type)
-                            ),
-                            payload=event.payload,
-                            emitted_at=event.timestamp,
-                            step_id=event.step_id,
-                        )
-
             trace_collector = _StorageTraceCollector(self.storage, state.namespace_id)
             self.event_emitter.add_listener(trace_collector)
 
@@ -521,6 +528,28 @@ class AgentRuntime:
                 self.event_emitter.remove_listener(trace_collector)
 
         final_run_result = result_builder.build(final_output=final_output)
+
+        # Mandatory trace persistence verification:
+        # A run must not report successful execution if trace event persistence failed.
+        if (
+            trace_collector is not None
+            and trace_collector.last_error is not None
+            and final_run_result.status == RunStatus.COMPLETED
+        ):
+            trace_err = trace_collector.last_error
+            fail_details = FailureDetails(
+                error_type=type(trace_err).__name__,
+                error_code="TRACE_PERSISTENCE_FAILURE",
+                message=f"Mandatory trace persistence failed: {trace_err}",
+            )
+            final_run_result = dataclasses.replace(
+                final_run_result,
+                status=RunStatus.FAILED,
+                failure_details=fail_details,
+                final_output=None,
+                error=fail_details.message,
+            )
+
         if self.storage is not None:
             try:
                 self.storage.save_run(final_run_result)
@@ -528,6 +557,19 @@ class AgentRuntime:
                 logger.error("Failed to save terminal run state to storage: %s", exc)
                 if self.event_emitter._strict:
                     raise
+                if final_run_result.status == RunStatus.COMPLETED:
+                    fail_details = FailureDetails(
+                        error_type=type(exc).__name__,
+                        error_code="STORAGE_PERSISTENCE_FAILURE",
+                        message=f"Mandatory run state persistence failed: {exc}",
+                    )
+                    final_run_result = dataclasses.replace(
+                        final_run_result,
+                        status=RunStatus.FAILED,
+                        failure_details=fail_details,
+                        final_output=None,
+                        error=fail_details.message,
+                    )
         return final_run_result
 
     def restore_from_checkpoint(
@@ -1047,6 +1089,43 @@ class AgentRuntime:
                 idemp_key = str(inv_id)
 
             dispatched_at = self.clock.now()
+
+            if is_non_idemp and not supports_provider_idemp and prior_uncertain is not None:
+                # Without verified provider idempotency, repeating an uncertain non-idempotent
+                # operation is unsafe and must be blocked with PARTIAL_DIRTY_ROLLBACK!
+                fail_details = FailureDetails(
+                    error_type="DirtyRollbackError",
+                    message=(
+                        f"Non-idempotent tool '{call.tool_name}' has prior uncertain "
+                        f"invocation '{prior_uncertain.invocation_id}' without provider "
+                        "idempotency. Automatic retry blocked to prevent duplicate side effects."
+                    ),
+                    step_id=step_id,
+                    error_code="PARTIAL_DIRTY_ROLLBACK",
+                    recovery_hint="Manual operator intervention or reconciliation required",
+                )
+                blocked_res = ToolResult(
+                    invocation_id=inv_id,
+                    tool_name=call.tool_name,
+                    status=ToolCallStatus.FAILED,
+                    side_effect=side_effect,
+                    idempotency_key=idemp_key,
+                    error=fail_details.message,
+                    failure_details=fail_details,
+                )
+                tool_results.append(blocked_res)
+                self.event_emitter.emit(
+                    RuntimeEventType.TOOL_COMPLETED,
+                    run_id=state.run_id,
+                    step_id=step_id,
+                    phase=StepState.DISPATCHING_TOOL,
+                    payload={
+                        "tool_name": call.tool_name,
+                        "status": str(ToolCallStatus.FAILED),
+                        "blocked_dirty": True,
+                    },
+                )
+                continue
 
             # Check for cached replay or dirty non-idempotent re-execution prevention
             if self.storage is not None and hasattr(self.storage, "get_replayable_cached_result"):

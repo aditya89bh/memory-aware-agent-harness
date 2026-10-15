@@ -38,6 +38,9 @@ def test_offline_persistence_demo_execution(tmp_path: Path) -> None:
     assert summary["restored_step_count"] == 2
     assert summary["final_status"] == "completed"
     assert summary["trace_events_count"] > 0
+    assert summary["process_a_pid"] != summary["process_b_pid"]
+    assert summary["process_a_pid"] > 0
+    assert summary["process_b_pid"] > 0
 
 
 def test_offline_persistence_demo_default_temp() -> None:

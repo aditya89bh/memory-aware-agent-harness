@@ -235,6 +235,9 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
     ) -> None:
         self.close()
 
+    def __del__(self) -> None:
+        self.close()
+
     def transaction(self, mode: str = "IMMEDIATE") -> AbstractContextManager[sqlite3.Connection]:
         """Context manager for explicit SQLite transaction or savepoint."""
         self._check_open()
@@ -300,7 +303,10 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
     ) -> Sequence[MemoryRecord]:
         """List active memories for a given category."""
         self._check_open()
-        return list_active_memories(self._conn, namespace_id=namespace_id, kind=kind, as_of=as_of)
+        effective_as_of = as_of if as_of is not None else self._clock()
+        return list_active_memories(
+            self._conn, namespace_id=namespace_id, kind=kind, as_of=effective_as_of
+        )
 
     @_wrap_storage_errors
     def tombstone(

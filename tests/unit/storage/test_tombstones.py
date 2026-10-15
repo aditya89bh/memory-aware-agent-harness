@@ -367,7 +367,7 @@ def test_purge_expired_memories_soft_delete() -> None:
     assert no_ttl_record.state == MemoryState.ACTIVE
 
     # list_active_memories excludes EXPIRED record
-    active = list_active_memories(conn, ns, MemoryKind.SEMANTIC)
+    active = list_active_memories(conn, ns, MemoryKind.SEMANTIC, as_of=base_time)
     active_ids = {r.id for r in active}
     assert MemoryId("mem_exp") not in active_ids
     assert MemoryId("mem_val") in active_ids

@@ -357,17 +357,14 @@ def test_checkpoints_cross_namespace_access_denied() -> None:
                 state_payload={"data": "tamper"},
             )
 
-        # 5. Cross-namespace get_checkpoint
-        with pytest.raises(CrossNamespaceAccessError):
-            get_checkpoint(conn, ckpt_a.checkpoint_id, ns_b)
+        # 5. Cross-namespace get_checkpoint returns None without disclosing existence
+        assert get_checkpoint(conn, ckpt_a.checkpoint_id, ns_b) is None
 
-        # 6. Cross-namespace get_latest_checkpoint
-        with pytest.raises(CrossNamespaceAccessError):
-            get_latest_checkpoint(conn, ns_b, run_a, BranchId("main"))
+        # 6. Cross-namespace get_latest_checkpoint returns None without disclosing existence
+        assert get_latest_checkpoint(conn, ns_b, run_a, BranchId("main")) is None
 
-        # 7. Cross-namespace list_checkpoints_for_run
-        with pytest.raises(CrossNamespaceAccessError):
-            list_checkpoints_for_run(conn, run_a, ns_b)
+        # 7. Cross-namespace list_checkpoints_for_run returns () without disclosing existence
+        assert list_checkpoints_for_run(conn, run_a, ns_b) == ()
 
         # 8. Nonexistent resources raise RecordNotFoundError
         with pytest.raises(RecordNotFoundError):
