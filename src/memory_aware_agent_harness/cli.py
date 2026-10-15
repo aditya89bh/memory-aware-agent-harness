@@ -10,11 +10,14 @@ import argparse
 import json
 import sys
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from memory_aware_agent_harness.contracts import (
     ContextManifest,
     FailureDetails,
+    MemoryId,
+    MemoryKind,
     ModelCallContext,
     ModelDecision,
     ModelFinishReason,
@@ -35,6 +38,7 @@ from memory_aware_agent_harness.runtime.events import (
     RuntimeEventType,
 )
 from memory_aware_agent_harness.runtime.runner import AgentRuntime
+from memory_aware_agent_harness.storage.adapter import SQLiteStorageAdapter
 
 
 class _DemoCalculatorTool(ToolProtocol):
@@ -204,8 +208,303 @@ def build_scenario_adapter(scenario: str) -> tuple[FakeModelAdapter, list[ToolPr
     return FakeModelAdapter(), []
 
 
+def handle_inspect_db(db_path: str, *, as_json: bool = False) -> int:
+    """Inspect SQLite WAL database tables, counts, and integrity."""
+    path = Path(db_path)
+    if not path.exists():
+        sys.stderr.write(f"Database file does not exist: {db_path}\n")
+        return 1
+    try:
+        with SQLiteStorageAdapter(db_path) as storage:
+            integrity_row = storage.conn.execute("PRAGMA integrity_check;").fetchone()
+            integrity = integrity_row[0] if integrity_row else "unknown"
+            runs_count = storage.conn.execute("SELECT COUNT(*) FROM runs;").fetchone()[0]
+            steps_count = storage.conn.execute("SELECT COUNT(*) FROM run_steps;").fetchone()[0]
+            tools_count = storage.conn.execute("SELECT COUNT(*) FROM tool_invocations;").fetchone()[
+                0
+            ]
+            memories_total = storage.conn.execute(
+                "SELECT COUNT(*) FROM memory_records;"
+            ).fetchone()[0]
+            memories_active = storage.conn.execute(
+                "SELECT COUNT(*) FROM memory_records WHERE state = 'active';"
+            ).fetchone()[0]
+            tombstones_count = storage.conn.execute("SELECT COUNT(*) FROM tombstones;").fetchone()[
+                0
+            ]
+            checkpoints_count = storage.conn.execute(
+                "SELECT COUNT(*) FROM checkpoints;"
+            ).fetchone()[0]
+            trace_events_count = storage.conn.execute(
+                "SELECT COUNT(*) FROM trace_events;"
+            ).fetchone()[0]
+
+            stats = {
+                "database_path": str(path.resolve()),
+                "integrity": integrity,
+                "runs": runs_count,
+                "steps": steps_count,
+                "tool_invocations": tools_count,
+                "memories_total": memories_total,
+                "memories_active": memories_active,
+                "tombstones": tombstones_count,
+                "checkpoints": checkpoints_count,
+                "trace_events": trace_events_count,
+            }
+            if as_json:
+                sys.stdout.write(json.dumps(stats, indent=2) + "\n")
+            else:
+                sys.stdout.write("=" * 60 + "\n")
+                sys.stdout.write(f"SQLite WAL Database Inspection: {path.name}\n")
+                sys.stdout.write("=" * 60 + "\n")
+                sys.stdout.write(f"Integrity Check:    {integrity}\n")
+                sys.stdout.write(f"Runs:               {runs_count}\n")
+                sys.stdout.write(f"Run Steps:          {steps_count}\n")
+                sys.stdout.write(f"Tool Invocations:   {tools_count}\n")
+                sys.stdout.write(
+                    f"Total Memories:     {memories_total} (Active: {memories_active})\n"
+                )
+                sys.stdout.write(f"Tombstones:         {tombstones_count}\n")
+                sys.stdout.write(f"Checkpoints:        {checkpoints_count}\n")
+                sys.stdout.write(f"Trace Events:       {trace_events_count}\n")
+                sys.stdout.write("=" * 60 + "\n")
+            return 0
+    except Exception as exc:
+        sys.stderr.write(f"Error inspecting database: {exc}\n")
+        return 1
+
+
+def handle_query_memories(
+    db_path: str,
+    *,
+    namespace: str,
+    kind: str | None = None,
+    query: str | None = None,
+    limit: int = 50,
+    as_json: bool = False,
+) -> int:
+    """Query and filter active memories from durable storage."""
+    path = Path(db_path)
+    if not path.exists():
+        sys.stderr.write(f"Database file does not exist: {db_path}\n")
+        return 1
+    ns = NamespaceId(namespace)
+    mem_kind: MemoryKind | None = None
+    if kind is not None:
+        try:
+            mem_kind = MemoryKind(kind.lower())
+        except ValueError:
+            sys.stderr.write(f"Invalid memory kind: {kind}\n")
+            return 1
+
+    try:
+        with SQLiteStorageAdapter(db_path) as storage:
+            if query is not None and query.strip():
+                kinds_filter = (mem_kind,) if mem_kind is not None else ()
+                records = list(
+                    storage.search(
+                        namespace_id=ns,
+                        query=query.strip(),
+                        kinds=kinds_filter,
+                        limit=limit,
+                    )
+                )
+            elif mem_kind is not None:
+                records = list(storage.list_active(ns, kind=mem_kind))[:limit]
+            else:
+                records = []
+                for k in MemoryKind:
+                    records.extend(storage.list_active(ns, kind=k))
+                records = records[:limit]
+
+            if as_json:
+                data = [rec.to_dict() for rec in records]
+                sys.stdout.write(json.dumps(data, indent=2) + "\n")
+            else:
+                sys.stdout.write(f"Memories in namespace '{namespace}' (Count: {len(records)}):\n")
+                for rec in records:
+                    content_preview = rec.content.replace("\n", " ")
+                    if len(content_preview) > 60:
+                        content_preview = content_preview[:57] + "..."
+                    sys.stdout.write(
+                        f"  [{rec.kind.value.upper()}] {rec.id} (conf={rec.confidence:.2f}): "
+                        f"{content_preview}\n"
+                    )
+            return 0
+    except Exception as exc:
+        sys.stderr.write(f"Error querying memories: {exc}\n")
+        return 1
+
+
+def handle_tombstone_memory(
+    db_path: str,
+    *,
+    namespace: str,
+    memory_id: str,
+    reason: str,
+    as_json: bool = False,
+) -> int:
+    """Tombstone (soft-delete) a memory record with verifiable audit reason."""
+    path = Path(db_path)
+    if not path.exists():
+        sys.stderr.write(f"Database file does not exist: {db_path}\n")
+        return 1
+    ns = NamespaceId(namespace)
+    mem_id = MemoryId(memory_id)
+    try:
+        with SQLiteStorageAdapter(db_path) as storage:
+            storage.tombstone(mem_id, ns, reason=reason)
+            if as_json:
+                res = {
+                    "status": "tombstoned",
+                    "memory_id": str(mem_id),
+                    "namespace_id": str(ns),
+                    "reason": reason,
+                }
+                sys.stdout.write(json.dumps(res, indent=2) + "\n")
+            else:
+                sys.stdout.write(
+                    f"Successfully tombstoned memory '{mem_id}' in namespace '{ns}'.\n"
+                    f"Reason: {reason}\n"
+                )
+            return 0
+    except Exception as exc:
+        sys.stderr.write(f"Error tombstoning memory: {exc}\n")
+        return 1
+
+
+def handle_recover_runs(
+    db_path: str,
+    *,
+    namespace: str,
+    as_json: bool = False,
+) -> int:
+    """Scan and reconcile orphaned runs in storage after a process crash."""
+    path = Path(db_path)
+    if not path.exists():
+        sys.stderr.write(f"Database file does not exist: {db_path}\n")
+        return 1
+    ns = NamespaceId(namespace)
+    try:
+        with SQLiteStorageAdapter(db_path) as storage:
+            reports = storage.reconcile_all_orphaned_runs(ns)
+            if as_json:
+                data = [rep.to_dict() for rep in reports]
+                sys.stdout.write(json.dumps(data, indent=2) + "\n")
+            else:
+                sys.stdout.write(
+                    f"Reconciled {len(reports)} orphaned run(s) in namespace '{ns}'.\n"
+                )
+                for rep in reports:
+                    dirty_str = " (DIRTY ROLLBACK)" if rep.is_dirty else ""
+                    sys.stdout.write(
+                        f"  - Run {rep.run_id}: {rep.previous_status.value} -> "
+                        f"{rep.new_status.value}{dirty_str} ({rep.reason})\n"
+                    )
+            return 0
+    except Exception as exc:
+        sys.stderr.write(f"Error recovering orphaned runs: {exc}\n")
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI entrypoint executing a bounded offline agent run."""
+    """CLI entrypoint executing agent runs or inspecting durable storage."""
+    args_list = list(sys.argv[1:] if argv is None else argv)
+
+    if args_list:
+        subcmd = args_list[0]
+        if subcmd == "inspect-db":
+            sub_parser = argparse.ArgumentParser(
+                prog="memory-agent inspect-db",
+                description="Inspect SQLite WAL database tables, counts, and integrity.",
+            )
+            sub_parser.add_argument("db_path", help="Path to SQLite database file.")
+            sub_parser.add_argument(
+                "--json", action="store_true", help="Output summary in JSON format."
+            )
+            sub_args = sub_parser.parse_args(args_list[1:])
+            return handle_inspect_db(sub_args.db_path, as_json=sub_args.json)
+
+        if subcmd == "query-memories":
+            sub_parser = argparse.ArgumentParser(
+                prog="memory-agent query-memories",
+                description="Query and filter active memories from durable storage.",
+            )
+            sub_parser.add_argument("db_path", help="Path to SQLite database file.")
+            sub_parser.add_argument(
+                "--namespace", required=True, help="Tenant namespace identifier."
+            )
+            sub_parser.add_argument(
+                "--kind",
+                choices=["working", "episodic", "semantic", "procedural"],
+                default=None,
+                help="Optional memory category filter.",
+            )
+            sub_parser.add_argument("--query", default=None, help="Optional search query text.")
+            sub_parser.add_argument(
+                "--limit",
+                type=int,
+                default=50,
+                help="Maximum memories to return (default: 50).",
+            )
+            sub_parser.add_argument(
+                "--json", action="store_true", help="Output results in JSON format."
+            )
+            sub_args = sub_parser.parse_args(args_list[1:])
+            return handle_query_memories(
+                sub_args.db_path,
+                namespace=sub_args.namespace,
+                kind=sub_args.kind,
+                query=sub_args.query,
+                limit=sub_args.limit,
+                as_json=sub_args.json,
+            )
+
+        if subcmd == "tombstone-memory":
+            sub_parser = argparse.ArgumentParser(
+                prog="memory-agent tombstone-memory",
+                description="Tombstone (soft-delete) a memory record with verifiable audit reason.",
+            )
+            sub_parser.add_argument("db_path", help="Path to SQLite database file.")
+            sub_parser.add_argument(
+                "--namespace", required=True, help="Tenant namespace identifier."
+            )
+            sub_parser.add_argument("--memory-id", required=True, help="Target memory identifier.")
+            sub_parser.add_argument("--reason", required=True, help="Audit reason for tombstoning.")
+            sub_parser.add_argument(
+                "--json", action="store_true", help="Output result in JSON format."
+            )
+            sub_args = sub_parser.parse_args(args_list[1:])
+            return handle_tombstone_memory(
+                sub_args.db_path,
+                namespace=sub_args.namespace,
+                memory_id=sub_args.memory_id,
+                reason=sub_args.reason,
+                as_json=sub_args.json,
+            )
+
+        if subcmd == "recover-runs":
+            sub_parser = argparse.ArgumentParser(
+                prog="memory-agent recover-runs",
+                description="Scan and reconcile orphaned runs in storage after process crash.",
+            )
+            sub_parser.add_argument("db_path", help="Path to SQLite database file.")
+            sub_parser.add_argument(
+                "--namespace", required=True, help="Tenant namespace identifier."
+            )
+            sub_parser.add_argument(
+                "--json", action="store_true", help="Output report in JSON format."
+            )
+            sub_args = sub_parser.parse_args(args_list[1:])
+            return handle_recover_runs(
+                sub_args.db_path,
+                namespace=sub_args.namespace,
+                as_json=sub_args.json,
+            )
+
+        if subcmd == "run":
+            args_list = args_list[1:]
+
     parser = argparse.ArgumentParser(
         prog="memory-agent",
         description="Memory-Aware Agent Harness - Offline Demo & Runtime Controller",
@@ -257,7 +556,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Output terminal RunResult in canonical JSON format.",
     )
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(args_list)
 
     task_desc = args.task
     if not task_desc:
