@@ -810,6 +810,24 @@ def get_memory_lineage(
     return tuple(str(r["source_reference_id"]) for r in rows)
 
 
+def record_memory_lineage(
+    conn: sqlite3.Connection,
+    target_memory_id: MemoryId,
+    namespace_id: NamespaceId,
+    source_reference_id: str,
+    relationship: str = "derived_from",
+) -> None:
+    """Record provenance relationship between memory and source reference."""
+    conn.execute(
+        """
+        INSERT INTO memory_lineage (
+            namespace_id, target_memory_id, source_reference_id, relationship
+        ) VALUES (?, ?, ?, ?);
+        """,
+        (str(namespace_id), str(target_memory_id), str(source_reference_id), relationship),
+    )
+
+
 def search_memories(
     conn: sqlite3.Connection,
     query_filter: MemoryFilter,

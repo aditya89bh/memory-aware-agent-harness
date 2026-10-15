@@ -362,20 +362,32 @@ def get_tool_invocation(
 def find_invocation_by_idempotency_key(
     conn: sqlite3.Connection,
     namespace_id: NamespaceId,
-    tool_name: str,
-    idempotency_key: str,
+    tool_name: str | None = None,
+    idempotency_key: str = "",
 ) -> ToolInvocationRecord | None:
     """Find the latest invocation for an idempotency key within a namespace."""
-    row = conn.execute(
-        """
-        SELECT ti.*, rs.run_id
-        FROM tool_invocations ti
-        JOIN run_steps rs ON ti.step_id = rs.step_id
-        WHERE ti.namespace_id = ? AND ti.tool_name = ? AND ti.idempotency_key = ?
-        ORDER BY ti.dispatched_at DESC LIMIT 1;
-        """,
-        (str(namespace_id), str(tool_name), str(idempotency_key)),
-    ).fetchone()
+    if tool_name:
+        row = conn.execute(
+            """
+            SELECT ti.*, rs.run_id
+            FROM tool_invocations ti
+            JOIN run_steps rs ON ti.step_id = rs.step_id
+            WHERE ti.namespace_id = ? AND ti.tool_name = ? AND ti.idempotency_key = ?
+            ORDER BY ti.dispatched_at DESC LIMIT 1;
+            """,
+            (str(namespace_id), str(tool_name), str(idempotency_key)),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT ti.*, rs.run_id
+            FROM tool_invocations ti
+            JOIN run_steps rs ON ti.step_id = rs.step_id
+            WHERE ti.namespace_id = ? AND ti.idempotency_key = ?
+            ORDER BY ti.dispatched_at DESC LIMIT 1;
+            """,
+            (str(namespace_id), str(idempotency_key)),
+        ).fetchone()
 
     if row is None:
         return None

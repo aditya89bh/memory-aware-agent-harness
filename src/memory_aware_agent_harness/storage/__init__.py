@@ -1,5 +1,6 @@
 """Unified SQLite WAL storage subsystem for agent harness."""
 
+from memory_aware_agent_harness.storage.adapter import SQLiteStorageAdapter
 from memory_aware_agent_harness.storage.checkpoints_repo import (
     CheckpointRecord,
     get_checkpoint,
@@ -86,6 +87,7 @@ __all__ = [
     "LineageEntry",
     "Migration",
     "MigrationError",
+    "SQLiteStorageAdapter",
     "StepCommitBundle",
     "StepCommitOutcome",
     "StorageSettings",
