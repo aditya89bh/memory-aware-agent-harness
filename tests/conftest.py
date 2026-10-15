@@ -29,7 +29,7 @@ from memory_aware_agent_harness.contracts import (
 
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
 if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+    sys.path.append(_REPO_ROOT)
 
 
 @pytest.fixture
