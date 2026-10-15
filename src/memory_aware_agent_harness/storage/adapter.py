@@ -90,6 +90,7 @@ from memory_aware_agent_harness.storage.tools_repo import (
     ToolInvocationRecord,
     find_invocation_by_idempotency_key,
     find_pending_or_unknown_invocations,
+    find_uncertain_invocation_by_fingerprint,
     mark_invocation_unknown,
     record_tool_intent,
     record_tool_result,
@@ -567,6 +568,23 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             run_id=run_id,
         )
 
+    def find_uncertain_invocation_by_fingerprint(
+        self,
+        namespace_id: NamespaceId,
+        tool_name: str,
+        argument_fingerprint: str,
+        run_id: RunId | None = None,
+    ) -> ToolInvocationRecord | None:
+        """Find the most recent pending or outcome-unknown invocation matching fingerprint."""
+        self._check_open()
+        return find_uncertain_invocation_by_fingerprint(
+            self._conn,
+            namespace_id=namespace_id,
+            tool_name=tool_name,
+            argument_fingerprint=argument_fingerprint,
+            run_id=run_id,
+        )
+
     def mark_invocation_unknown(
         self,
         invocation_id: ToolInvocationId,
@@ -627,6 +645,12 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
         idempotency_key: str,
         namespace_id: NamespaceId,
         tool_name: str,
+        *,
+        arguments: Mapping[str, Any] | None = None,
+        argument_fingerprint: str | None = None,
+        run_id: RunId | None = None,
+        supports_provider_idempotency: bool = False,
+        is_non_idempotent: bool = False,
     ) -> ToolResult | None:
         """Check for reusable cached outcome or block illegal non-idempotent re-execution."""
         self._check_open()
@@ -637,6 +661,11 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
             idempotency_key=idempotency_key,
             namespace_id=namespace_id,
             tool_name=tool_name,
+            arguments=arguments,
+            argument_fingerprint=argument_fingerprint,
+            run_id=run_id,
+            supports_provider_idempotency=supports_provider_idempotency,
+            is_non_idempotent=is_non_idempotent,
         )
 
     # =========================================================================

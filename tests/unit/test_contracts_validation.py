@@ -739,6 +739,20 @@ def test_storage_port_protocol_conformance() -> None:
         ) -> ToolResult | None:
             return None
 
+        def get_replayable_cached_result(
+            self,
+            idempotency_key: str,
+            namespace_id: NamespaceId,
+            tool_name: str,
+            *,
+            arguments: Mapping[str, Any] | None = None,
+            argument_fingerprint: str | None = None,
+            run_id: RunId | None = None,
+            supports_provider_idempotency: bool = False,
+            is_non_idempotent: bool = False,
+        ) -> ToolResult | None:
+            return None
+
         def save_checkpoint(
             self,
             checkpoint_id: CheckpointId,

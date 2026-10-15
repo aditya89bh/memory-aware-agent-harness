@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +28,62 @@ from memory_aware_agent_harness.storage.security import (
     resolve_validator,
 )
 
+_META_ARGUMENT_KEYS: frozenset[str] = frozenset(
+    {"idempotency_key", "call_id", "_call_id", "_idempotency_key"}
+)
+
+
+def _canonicalize_for_fingerprint(val: Any) -> Any:
+    if val is None or isinstance(val, bool | str):
+        return val
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            return str(val)
+        return int(val) if val.is_integer() else val
+    if isinstance(val, Mapping):
+        return {
+            str(k): _canonicalize_for_fingerprint(v)
+            for k, v in sorted(val.items(), key=lambda item: str(item[0]))
+            if str(k) not in _META_ARGUMENT_KEYS
+        }
+    if isinstance(val, Sequence) and not isinstance(val, str | bytes):
+        return [_canonicalize_for_fingerprint(item) for item in val]
+    return str(val)
+
+
+def compute_argument_fingerprint(arguments: Mapping[str, Any] | None) -> str:
+    """Compute a canonical SHA-256 fingerprint for tool arguments.
+
+    Excludes execution-level meta parameters such as model-supplied idempotency_key
+    or call_id to enforce that external operations are identified by their semantic payload.
+    """
+    if not arguments:
+        return hashlib.sha256(b"{}").hexdigest()
+    canonical = _canonicalize_for_fingerprint(arguments)
+    serialized = json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=lambda o: dict(o) if isinstance(o, Mapping) else str(o),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def compute_argument_fingerprint_from_json(arguments_json: str | None) -> str:
+    """Parse JSON arguments and compute canonical fingerprint."""
+    if not arguments_json or not arguments_json.strip():
+        return hashlib.sha256(b"{}").hexdigest()
+    try:
+        parsed = json.loads(arguments_json)
+        if isinstance(parsed, Mapping):
+            return compute_argument_fingerprint(parsed)
+    except Exception:
+        pass
+    return hashlib.sha256(arguments_json.encode("utf-8")).hexdigest()
+
 
 @dataclass(frozen=True)
 class ToolInvocationRecord:
@@ -44,6 +102,7 @@ class ToolInvocationRecord:
     error_text: str | None
     dispatched_at: datetime
     completed_at: datetime | None
+    argument_fingerprint: str = ""
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> ToolInvocationRecord:
@@ -51,6 +110,11 @@ class ToolInvocationRecord:
         dispatched_dt = datetime.fromisoformat(row["dispatched_at"])
         completed_raw = row["completed_at"]
         completed_dt = datetime.fromisoformat(completed_raw) if completed_raw else None
+        row_dict = dict(row)
+        fingerprint = str(row_dict.get("argument_fingerprint") or "")
+        if not fingerprint and row_dict.get("arguments_json"):
+            fingerprint = compute_argument_fingerprint_from_json(str(row_dict["arguments_json"]))
+
         return cls(
             invocation_id=ToolInvocationId(str(row["invocation_id"])),
             step_id=StepId(str(row["step_id"])),
@@ -65,6 +129,7 @@ class ToolInvocationRecord:
             error_text=str(row["error_text"]) if row["error_text"] is not None else None,
             dispatched_at=dispatched_dt,
             completed_at=completed_dt,
+            argument_fingerprint=fingerprint,
         )
 
 
@@ -187,32 +252,150 @@ def record_tool_intent(
             else datetime.now(UTC).isoformat()
         )
 
-        conn.execute(
+        argument_fingerprint = compute_argument_fingerprint(arguments)
+
+        # Check if an invocation for this idempotency key already exists under this namespace & tool
+        existing_key_row = conn.execute(
             """
-            INSERT INTO tool_invocations (
-                invocation_id, step_id, namespace_id, tool_name,
-                arguments_json, side_effect, idempotency_key, status,
-                result_json, error_text, dispatched_at, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL)
-            ON CONFLICT(invocation_id) DO UPDATE SET
-                step_id = excluded.step_id,
-                tool_name = excluded.tool_name,
-                arguments_json = excluded.arguments_json,
-                side_effect = excluded.side_effect,
-                idempotency_key = excluded.idempotency_key;
+            SELECT invocation_id FROM tool_invocations
+            WHERE namespace_id = ? AND tool_name = ? AND idempotency_key = ?;
             """,
-            (
-                str(invocation_id),
-                str(step_id),
-                str(namespace_id),
-                str(tool_name),
-                arguments_json,
-                side_effect.value,
-                str(idempotency_key),
-                ToolCallStatus.PENDING.value,
-                eff_dispatched_at,
-            ),
-        )
+            (str(namespace_id), str(tool_name), str(idempotency_key)),
+        ).fetchone()
+
+        if existing_key_row is not None and existing_key_row["invocation_id"] != str(invocation_id):
+            try:
+                conn.execute(
+                    """
+                    UPDATE tool_invocations SET
+                        invocation_id = ?,
+                        step_id = ?,
+                        arguments_json = ?,
+                        argument_fingerprint = ?,
+                        side_effect = ?,
+                        status = ?,
+                        dispatched_at = ?,
+                        result_json = NULL,
+                        error_text = NULL,
+                        completed_at = NULL
+                    WHERE namespace_id = ? AND tool_name = ? AND idempotency_key = ?;
+                    """,
+                    (
+                        str(invocation_id),
+                        str(step_id),
+                        arguments_json,
+                        argument_fingerprint,
+                        side_effect.value,
+                        ToolCallStatus.PENDING.value,
+                        eff_dispatched_at,
+                        str(namespace_id),
+                        str(tool_name),
+                        str(idempotency_key),
+                    ),
+                )
+                return
+            except sqlite3.OperationalError as exc:
+                if "has no column named argument_fingerprint" in str(exc):
+                    conn.execute(
+                        "ALTER TABLE tool_invocations "
+                        "ADD COLUMN argument_fingerprint TEXT NOT NULL DEFAULT '';"
+                    )
+                    conn.execute(
+                        """
+                        UPDATE tool_invocations SET
+                            invocation_id = ?,
+                            step_id = ?,
+                            arguments_json = ?,
+                            argument_fingerprint = ?,
+                            side_effect = ?,
+                            status = ?,
+                            dispatched_at = ?,
+                            result_json = NULL,
+                            error_text = NULL,
+                            completed_at = NULL
+                        WHERE namespace_id = ? AND tool_name = ? AND idempotency_key = ?;
+                        """,
+                        (
+                            str(invocation_id),
+                            str(step_id),
+                            arguments_json,
+                            argument_fingerprint,
+                            side_effect.value,
+                            ToolCallStatus.PENDING.value,
+                            eff_dispatched_at,
+                            str(namespace_id),
+                            str(tool_name),
+                            str(idempotency_key),
+                        ),
+                    )
+                    return
+                raise
+
+        try:
+            conn.execute(
+                """
+                INSERT INTO tool_invocations (
+                    invocation_id, step_id, namespace_id, tool_name,
+                    arguments_json, argument_fingerprint, side_effect, idempotency_key, status,
+                    result_json, error_text, dispatched_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL)
+                ON CONFLICT(invocation_id) DO UPDATE SET
+                    step_id = excluded.step_id,
+                    tool_name = excluded.tool_name,
+                    arguments_json = excluded.arguments_json,
+                    argument_fingerprint = excluded.argument_fingerprint,
+                    side_effect = excluded.side_effect,
+                    idempotency_key = excluded.idempotency_key;
+                """,
+                (
+                    str(invocation_id),
+                    str(step_id),
+                    str(namespace_id),
+                    str(tool_name),
+                    arguments_json,
+                    argument_fingerprint,
+                    side_effect.value,
+                    str(idempotency_key),
+                    ToolCallStatus.PENDING.value,
+                    eff_dispatched_at,
+                ),
+            )
+        except sqlite3.OperationalError as exc:
+            if "has no column named argument_fingerprint" in str(exc):
+                conn.execute(
+                    "ALTER TABLE tool_invocations "
+                    "ADD COLUMN argument_fingerprint TEXT NOT NULL DEFAULT '';"
+                )
+                conn.execute(
+                    """
+                    INSERT INTO tool_invocations (
+                        invocation_id, step_id, namespace_id, tool_name,
+                        arguments_json, argument_fingerprint, side_effect, idempotency_key, status,
+                        result_json, error_text, dispatched_at, completed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL)
+                    ON CONFLICT(invocation_id) DO UPDATE SET
+                        step_id = excluded.step_id,
+                        tool_name = excluded.tool_name,
+                        arguments_json = excluded.arguments_json,
+                        argument_fingerprint = excluded.argument_fingerprint,
+                        side_effect = excluded.side_effect,
+                        idempotency_key = excluded.idempotency_key;
+                    """,
+                    (
+                        str(invocation_id),
+                        str(step_id),
+                        str(namespace_id),
+                        str(tool_name),
+                        arguments_json,
+                        argument_fingerprint,
+                        side_effect.value,
+                        str(idempotency_key),
+                        ToolCallStatus.PENDING.value,
+                        eff_dispatched_at,
+                    ),
+                )
+            else:
+                raise
 
 
 def record_tool_result(
@@ -519,3 +702,57 @@ def find_pending_or_unknown_invocations(
         ).fetchall()
 
     return tuple(ToolInvocationRecord.from_row(r) for r in rows)
+
+
+def find_uncertain_invocation_by_fingerprint(
+    conn: sqlite3.Connection,
+    namespace_id: NamespaceId,
+    tool_name: str,
+    argument_fingerprint: str,
+    run_id: RunId | None = None,
+) -> ToolInvocationRecord | None:
+    """Find the most recent pending or outcome-unknown invocation matching fingerprint."""
+    if run_id is not None:
+        run_row = conn.execute(
+            "SELECT namespace_id FROM runs WHERE run_id = ?;",
+            (str(run_id),),
+        ).fetchone()
+        if run_row is None:
+            return None
+        if run_row["namespace_id"] != str(namespace_id):
+            raise CrossNamespaceAccessError(
+                f"Cross-namespace access denied: run '{run_id}' belongs to "
+                f"namespace '{run_row['namespace_id']}', requested '{namespace_id}'",
+                requested_namespace=str(namespace_id),
+                target_namespace=str(run_row["namespace_id"]),
+                resource_id=str(run_id),
+            )
+        rows = conn.execute(
+            """
+            SELECT ti.*, rs.run_id
+            FROM tool_invocations ti
+            JOIN run_steps rs ON ti.step_id = rs.step_id
+            WHERE ti.namespace_id = ? AND rs.run_id = ? AND ti.tool_name = ?
+              AND ti.status IN ('pending', 'outcome_unknown')
+            ORDER BY ti.dispatched_at DESC;
+            """,
+            (str(namespace_id), str(run_id), str(tool_name)),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT ti.*, rs.run_id
+            FROM tool_invocations ti
+            JOIN run_steps rs ON ti.step_id = rs.step_id
+            WHERE ti.namespace_id = ? AND ti.tool_name = ?
+              AND ti.status IN ('pending', 'outcome_unknown')
+            ORDER BY ti.dispatched_at DESC;
+            """,
+            (str(namespace_id), str(tool_name)),
+        ).fetchall()
+
+    for r in rows:
+        rec = ToolInvocationRecord.from_row(r)
+        if rec.argument_fingerprint == argument_fingerprint:
+            return rec
+    return None

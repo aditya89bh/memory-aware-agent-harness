@@ -7,6 +7,7 @@ and cancellation tokens across the execution lifecycle.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -60,6 +61,8 @@ class LifecycleState:
         clock: ClockPort | None = None,
         id_generator: IdGeneratorPort | None = None,
         cancellation_token: CancellationToken | None = None,
+        business_operation_id: str | None = None,
+        business_operation_ids: Mapping[str, str] | None = None,
     ) -> None:
         self.run_id = run_id
         self.namespace_id = namespace_id
@@ -68,6 +71,10 @@ class LifecycleState:
         self.id_generator = id_generator if id_generator is not None else SystemIdGenerator()
         self.cancellation_token = (
             cancellation_token if cancellation_token is not None else CancellationToken()
+        )
+        self.business_operation_id = business_operation_id
+        self.business_operation_ids: dict[str, str] = (
+            dict(business_operation_ids) if business_operation_ids else {}
         )
 
         self.run_fsm = RunFSM(initial_state=RunStatus.INITIALIZED, clock=self.clock)
@@ -86,6 +93,14 @@ class LifecycleState:
         self.metadata: dict[str, Any] = {}
         # Per-run checkpoint lineage head. Must never be shared across runs or namespaces.
         self.last_checkpoint_id: CheckpointId | None = None
+
+    def get_business_operation_id(self, tool_name: str, call_id: str | None = None) -> str | None:
+        """Resolve trusted caller-supplied business operation identity for a tool call."""
+        if tool_name in self.business_operation_ids:
+            return self.business_operation_ids[tool_name]
+        if call_id and call_id in self.business_operation_ids:
+            return self.business_operation_ids[call_id]
+        return self.business_operation_id
 
     @property
     def status(self) -> RunStatus:

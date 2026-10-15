@@ -27,6 +27,8 @@ from memory_aware_agent_harness.contracts import (
 )
 from memory_aware_agent_harness.storage.tools_repo import (
     ToolInvocationRecord,
+    compute_argument_fingerprint,
+    compute_argument_fingerprint_from_json,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,74 +109,147 @@ class ToolRecoveryEngine:
         idempotency_key: str,
         namespace_id: NamespaceId,
         tool_name: str,
+        *,
+        arguments: Mapping[str, Any] | None = None,
+        argument_fingerprint: str | None = None,
+        run_id: RunId | None = None,
+        supports_provider_idempotency: bool = False,
+        is_non_idempotent: bool = False,
     ) -> ToolResult | None:
         """Check for a reusable cached outcome or block illegal non-idempotent re-execution.
 
         Args:
-            idempotency_key: Unique idempotency key for the tool call.
+            idempotency_key: Unique idempotency key or business operation identifier.
             namespace_id: Tenant namespace.
             tool_name: Registered tool name.
+            arguments: Current call input parameters.
+            argument_fingerprint: Canonical SHA-256 fingerprint of current arguments.
+            run_id: Parent run identifier.
+            supports_provider_idempotency: Whether external service safely deduplicates.
+            is_non_idempotent: Whether this tool has non-idempotent side effects.
 
         Returns:
-            A cached ToolResult if a prior completed execution exists, or None if fresh
-            execution is required.
+            A cached ToolResult if a prior completed execution exists with matching
+            argument fingerprint, or None if fresh execution/retry is permitted.
 
         Raises:
-            DirtyRollbackError: If a non-idempotent write previously halted with OUTCOME_UNKNOWN
-            or is currently in PENDING state.
+            DirtyRollbackError: If arguments differ from prior invocation with same key,
+            or if a non-idempotent action is in uncertain state without verified provider
+            deduplication.
         """
-        if not hasattr(self.storage, "find_invocation_by_idempotency_key"):
-            return None
-
-        rec = self.storage.find_invocation_by_idempotency_key(
-            idempotency_key=idempotency_key,
-            namespace_id=namespace_id,
-            tool_name=tool_name,
+        curr_fingerprint = argument_fingerprint or (
+            compute_argument_fingerprint(arguments) if arguments is not None else None
         )
-        if rec is None:
+
+        rec: ToolInvocationRecord | None = None
+        if hasattr(self.storage, "find_invocation_by_idempotency_key"):
+            rec = self.storage.find_invocation_by_idempotency_key(
+                idempotency_key=idempotency_key,
+                namespace_id=namespace_id,
+                tool_name=tool_name,
+            )
+
+        if rec is not None:
+            cached_fingerprint = rec.argument_fingerprint or compute_argument_fingerprint_from_json(
+                rec.arguments_json
+            )
+
+            # Never reuse cached results when argument fingerprints differ!
+            if curr_fingerprint is not None and cached_fingerprint != curr_fingerprint:
+                raise DirtyRollbackError(
+                    f"Idempotency conflict for tool '{tool_name}' with key '{idempotency_key}': "
+                    f"argument fingerprint does not match prior invocation. "
+                    f"Cached outcome cannot be reused for different parameters.",
+                    details={
+                        "invocation_id": str(rec.invocation_id),
+                        "idempotency_key": idempotency_key,
+                        "tool_name": tool_name,
+                        "current_fingerprint": curr_fingerprint,
+                        "cached_fingerprint": cached_fingerprint,
+                        "error_code": "IDEMPOTENCY_ARGUMENT_MISMATCH",
+                    },
+                )
+
+            # If previously COMPLETED, replay cached result
+            if rec.status == ToolCallStatus.COMPLETED:
+                cached_data: Mapping[str, Any] = {}
+                if rec.result_json:
+                    try:
+                        loaded = json.loads(rec.result_json)
+                        if isinstance(loaded, Mapping):
+                            cached_data = loaded
+                    except Exception:
+                        cached_data = {"raw": rec.result_json}
+
+                return ToolResult(
+                    invocation_id=rec.invocation_id,
+                    tool_name=tool_name,
+                    status=ToolCallStatus.COMPLETED,
+                    side_effect=rec.side_effect,
+                    idempotency_key=idempotency_key,
+                    result=cached_data,
+                    execution_time_ms=0.0,
+                )
+
+            # If OUTCOME_UNKNOWN or PENDING on NON_IDEMPOTENT_WRITE:
+            if rec.side_effect == SideEffectType.NON_IDEMPOTENT_WRITE and rec.status in (
+                ToolCallStatus.OUTCOME_UNKNOWN,
+                ToolCallStatus.PENDING,
+            ):
+                if supports_provider_idempotency:
+                    # Verified provider-supported idempotency allows safe retry
+                    return None
+
+                raise DirtyRollbackError(
+                    f"Automated re-execution blocked: non-idempotent tool '{tool_name}' with key "
+                    f"'{idempotency_key}' is in uncertain state '{rec.status.value}'. "
+                    f"Manual operator resolution or compensation is required.",
+                    details={
+                        "invocation_id": str(rec.invocation_id),
+                        "idempotency_key": idempotency_key,
+                        "tool_name": tool_name,
+                        "status": rec.status.value,
+                        "side_effect": rec.side_effect.value,
+                        "error_code": "PARTIAL_DIRTY_ROLLBACK",
+                    },
+                )
+
+            # For IDEMPOTENT calls with OUTCOME_UNKNOWN, retry is legally permissible
             return None
 
-        # 1. If previously COMPLETED, replay cached result for idempotent calls or successful writes
-        if rec.status == ToolCallStatus.COMPLETED:
-            cached_data: Mapping[str, Any] = {}
-            if rec.result_json:
-                try:
-                    loaded = json.loads(rec.result_json)
-                    if isinstance(loaded, Mapping):
-                        cached_data = loaded
-                except Exception:
-                    cached_data = {"raw": rec.result_json}
+        # If not found by key, check for uncertain prior invocation by fingerprint
+        # on non-idempotent tool
+        if is_non_idempotent and curr_fingerprint is not None:
+            finder = getattr(self.storage, "find_uncertain_invocation_by_fingerprint", None)
+            prior_uncertain: ToolInvocationRecord | None = None
+            if callable(finder):
+                prior_uncertain = finder(
+                    namespace_id=namespace_id,
+                    tool_name=tool_name,
+                    argument_fingerprint=curr_fingerprint,
+                    run_id=run_id,
+                )
 
-            return ToolResult(
-                invocation_id=rec.invocation_id,
-                tool_name=tool_name,
-                status=ToolCallStatus.COMPLETED,
-                side_effect=rec.side_effect,
-                idempotency_key=idempotency_key,
-                result=cached_data,
-                execution_time_ms=0.0,
-            )
+            if prior_uncertain is not None:
+                if supports_provider_idempotency:
+                    return None
 
-        # 2. If OUTCOME_UNKNOWN or PENDING on NON_IDEMPOTENT_WRITE, fail closed!
-        if rec.side_effect == SideEffectType.NON_IDEMPOTENT_WRITE and rec.status in (
-            ToolCallStatus.OUTCOME_UNKNOWN,
-            ToolCallStatus.PENDING,
-        ):
-            raise DirtyRollbackError(
-                f"Automated re-execution blocked: non-idempotent tool '{tool_name}' with key "
-                f"'{idempotency_key}' is in uncertain state '{rec.status.value}'. "
-                f"Manual operator resolution or compensation is required.",
-                details={
-                    "invocation_id": str(rec.invocation_id),
-                    "idempotency_key": idempotency_key,
-                    "tool_name": tool_name,
-                    "status": rec.status.value,
-                    "side_effect": rec.side_effect.value,
-                    "error_code": "PARTIAL_DIRTY_ROLLBACK",
-                },
-            )
+                raise DirtyRollbackError(
+                    f"Automated re-execution blocked: potentially duplicated non-idempotent "
+                    f"tool '{tool_name}' with new call ID has uncertain prior execution "
+                    f"(status '{prior_uncertain.status.value}', "
+                    f"invocation '{prior_uncertain.invocation_id}'). "
+                    "Manual operator resolution or compensation is required.",
+                    details={
+                        "invocation_id": str(prior_uncertain.invocation_id),
+                        "idempotency_key": prior_uncertain.idempotency_key,
+                        "tool_name": tool_name,
+                        "status": prior_uncertain.status.value,
+                        "side_effect": prior_uncertain.side_effect.value,
+                        "error_code": "PARTIAL_DIRTY_ROLLBACK",
+                    },
+                )
 
-        # 3. For IDEMPOTENT calls with OUTCOME_UNKNOWN, retry is legally permissible
         return None
 
     def resolve_invocation(

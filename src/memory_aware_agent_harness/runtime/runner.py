@@ -85,6 +85,7 @@ from memory_aware_agent_harness.storage.checkpoints_repo import (
     DEFAULT_BRANCH_ID,
     CheckpointRecord,
 )
+from memory_aware_agent_harness.storage.tools_repo import compute_argument_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,8 @@ class AgentRuntime:
         budgets: RunBudgets | None = None,
         event_listeners: Sequence[RuntimeEventListener] = (),
         strict_diagnostics: bool = False,
+        business_operation_id: str | None = None,
+        business_operation_ids: Mapping[str, str] | None = None,
     ) -> None:
         self.model = model
         tools_list: list[ToolProtocol] = []
@@ -226,6 +229,10 @@ class AgentRuntime:
                 f"budgets must be an instance of RunBudgets, got {type(budgets).__name__}"
             )
         self.default_budgets = budgets if budgets is not None else RunBudgets()
+        self.default_business_operation_id = business_operation_id
+        self.default_business_operation_ids = (
+            dict(business_operation_ids) if business_operation_ids else {}
+        )
         self.event_emitter = DiagnosticEventEmitter(
             clock=self.clock,
             id_generator=self.id_generator,
@@ -241,6 +248,8 @@ class AgentRuntime:
         run_id: RunId | None = None,
         budgets: RunBudgets | None = None,
         cancellation_token: CancellationToken | None = None,
+        business_operation_id: str | None = None,
+        business_operation_ids: Mapping[str, str] | None = None,
     ) -> RunResult:
         """Execute a task in a bounded single-agent loop.
 
@@ -279,6 +288,11 @@ class AgentRuntime:
         if effective_run_id is None:
             effective_run_id = RunId(self.id_generator.generate_id("run"))
 
+        eff_biz_id = business_operation_id or self.default_business_operation_id
+        eff_biz_ids = dict(self.default_business_operation_ids)
+        if business_operation_ids:
+            eff_biz_ids.update(business_operation_ids)
+
         state = LifecycleState(
             run_id=effective_run_id,
             namespace_id=namespace_id,
@@ -286,6 +300,8 @@ class AgentRuntime:
             clock=self.clock,
             id_generator=self.id_generator,
             cancellation_token=cancellation_token,
+            business_operation_id=eff_biz_id,
+            business_operation_ids=eff_biz_ids,
         )
 
         budget_guard = BudgetGuard(state.budgets)
@@ -986,7 +1002,37 @@ class AgentRuntime:
             inv_id = ToolInvocationId(self.id_generator.generate_id(f"inv_{call.tool_name}"))
             tool = self.tools_by_name.get(call.tool_name)
             side_effect = tool.side_effect if tool is not None else SideEffectType.READ_ONLY
-            idemp_key = str(call.arguments.get("idempotency_key") or f"idemp_{call.call_id}")
+            is_non_idemp = side_effect == SideEffectType.NON_IDEMPOTENT_WRITE
+            supports_provider_idemp = bool(getattr(tool, "supports_provider_idempotency", False))
+
+            # Store and check canonical argument fingerprint
+            fingerprint = compute_argument_fingerprint(call.arguments)
+
+            # Separate invocation identity from business-operation identity.
+            # Model-supplied call IDs must NEVER serve as the sole trusted identity
+            # for external operations.
+            # Model-provided arguments must not override trusted idempotency policy.
+            trusted_biz_id = state.get_business_operation_id(call.tool_name, call.call_id)
+            if trusted_biz_id:
+                # Caller-supplied trusted business operation ID overrides any model arguments
+                idemp_key = trusted_biz_id
+            elif tool is not None and hasattr(tool, "get_business_operation_id") and callable(
+                getattr(tool, "get_business_operation_id", None)
+            ):
+                biz_func = getattr(tool, "get_business_operation_id")
+                idemp_key = str(biz_func(call.arguments, state))
+            else:
+                model_key = call.arguments.get("idempotency_key")
+                if model_key and isinstance(model_key, str) and model_key.strip():
+                    idemp_key = model_key.strip()
+                elif is_non_idemp:
+                    if supports_provider_idemp:
+                        idemp_key = f"prov_{state.run_id}_{call.tool_name}_{fingerprint[:16]}"
+                    else:
+                        idemp_key = f"op_{call.tool_name}_{fingerprint[:16]}"
+                else:
+                    idemp_key = f"idemp_{call.tool_name}_{fingerprint[:16]}"
+
             dispatched_at = self.clock.now()
 
             # Check for cached replay or dirty non-idempotent re-execution prevention
@@ -996,6 +1042,11 @@ class AgentRuntime:
                         idempotency_key=idemp_key,
                         namespace_id=state.namespace_id,
                         tool_name=call.tool_name,
+                        arguments=call.arguments,
+                        argument_fingerprint=fingerprint,
+                        run_id=None,
+                        supports_provider_idempotency=supports_provider_idemp,
+                        is_non_idempotent=is_non_idemp,
                     )
                 except DirtyRollbackError as dre:
                     fail_details = FailureDetails(
@@ -1091,6 +1142,7 @@ class AgentRuntime:
                 idempotency_key=idemp_key,
                 deadline=deadline,
                 cancellation_token=state.cancellation_token,
+                business_operation_id=trusted_biz_id,
             )
 
             t_start = self.clock.now()

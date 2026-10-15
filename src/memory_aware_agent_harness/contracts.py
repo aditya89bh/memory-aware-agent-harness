@@ -1522,6 +1522,7 @@ class ToolCallContext(SerializableRecord):
     deadline: datetime | None = None
     is_cancelled: bool = False
     cancellation_token: CancellationToken | None = None
+    business_operation_id: str | None = None
 
     def __post_init__(self) -> None:
         if not str(self.run_id).strip():
@@ -1614,6 +1615,7 @@ class ToolCallContext(SerializableRecord):
             deadline=_parse_dt(deadline_raw) if deadline_raw is not None else None,
             is_cancelled=bool(data.get("is_cancelled", False)),
             cancellation_token=cancellation_token,
+            business_operation_id=data.get("business_operation_id"),
         )
 
 
@@ -2802,6 +2804,21 @@ class StoragePort(Protocol):
         """Retrieve tool invocation outcome."""
         ...
 
+    def get_replayable_cached_result(
+        self,
+        idempotency_key: str,
+        namespace_id: NamespaceId,
+        tool_name: str,
+        *,
+        arguments: Mapping[str, Any] | None = None,
+        argument_fingerprint: str | None = None,
+        run_id: RunId | None = None,
+        supports_provider_idempotency: bool = False,
+        is_non_idempotent: bool = False,
+    ) -> ToolResult | None:
+        """Check for reusable cached outcome or block illegal non-idempotent re-execution."""
+        return None
+
     # --- Checkpoints ---
     def save_checkpoint(
         self,
@@ -2870,6 +2887,13 @@ class ToolProtocol(Protocol):
         ...
 
 
+@runtime_checkable
+class ProviderIdempotentTool(ToolProtocol, Protocol):
+    """Protocol for tools declaring external provider-supported idempotency."""
+
+    supports_provider_idempotency: bool
+
+
 __all__ = [
     "LEGAL_RUN_TRANSITIONS",
     "LEGAL_STEP_TRANSITIONS",
@@ -2910,6 +2934,7 @@ __all__ = [
     "OrphanedRunReport",
     "PolicyViolationError",
     "PrePersistenceSecurityError",
+    "ProviderIdempotentTool",
     "RecordNotFoundError",
     "ReplayDivergenceError",
     "RunBudgets",

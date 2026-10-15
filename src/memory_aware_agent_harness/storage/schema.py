@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
     namespace_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
     arguments_json TEXT NOT NULL,
+    argument_fingerprint TEXT NOT NULL DEFAULT '',
     side_effect TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -99,6 +100,8 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
 );
 CREATE INDEX IF NOT EXISTS idx_tool_idempotency
 ON tool_invocations(namespace_id, tool_name, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_tool_fingerprint
+ON tool_invocations(namespace_id, tool_name, argument_fingerprint);
 
 -- 7. Checkpoints Table
 CREATE TABLE IF NOT EXISTS checkpoints (
