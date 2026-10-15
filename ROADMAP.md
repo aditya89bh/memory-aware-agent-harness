@@ -126,7 +126,46 @@ Final targeted remediation addressing independent reproduction of Priority 0 blo
 - 74. `23fac15`: `fix(cli): derive calculation output strictly from observation without hardcoded fallback` (removed "42" fallback)
 - 75. `84689d1`: `fix(runtime): reject non-string namespace_id and propagate strict termination errors` (typed boundary validation)
 - 76. `3265f25`: `feat(runtime): preserve partial step and tool execution history on aborted steps` (side effect uncertainty & token reconciliation)
-- 77. `HEAD`: `docs(remediation): reconcile final Phase 1 audit findings and verified evidence` (documentation & evidence reconciliation)
+- 77. `475b63c`: `docs(remediation): reconcile final Phase 1 audit findings and verified evidence` (documentation & evidence reconciliation)
+
+### 2.5.3 Accounting of Phase 2 Commits (Commits 78 to 108)
+The following 31 commits delivered the unified SQLite WAL storage persistence and memory model:
+- **Batch A: Storage Contracts & Schema Foundation (Commits 78 to 83):**
+  78. `00949e5`: `fix(runtime): preserve consuming step and tokens on budget-triggered termination (P2-01)`
+  79. `e592e01`: `fix(contracts): encapsulate FrozenDict backing storage with read-only MappingProxy (P2-02)`
+  80. `f6abe02`: `docs(remediation): document strict RUN_TERMINATED listener semantics and residual audit items (P2-03, P2-04)`
+  81. `e3fabe8`: `feat(contracts): add explicit origin, run_id, branch_id, and version scoping to MemoryRecord`
+  82. `cff4d2c`: `feat(contracts): define typed StoragePort, ScoredMemoryItem, and search query filters`
+  83. `b997739`: `feat(contracts): define schema versioning and deterministic state hash contracts`
+- **Batch B: SQLite Core Repositories & WAL PRAGMAs (Commits 84 to 90):**
+  84. `a9dbc53`: `feat(storage): implement SQLite connection factory with WAL PRAGMAs and busy timeout`
+  85. `eb9288a`: `feat(storage): implement schema DDL and versioned migration runner`
+  86. `ff413fc`: `feat(storage): implement SQLite runs and steps repository with namespace enforcement`
+  87. `e2a3546`: `feat(storage): implement SQLite tool invocations repository with durable intent recording`
+  88. `bf63619`: `feat(storage): implement SQLite checkpoints repository with state hash integrity`
+  89. `1006119`: `feat(storage): implement SQLite trace events repository with sequence ordering`
+  90. `5eb0052`: `feat(storage): implement SQLite memory records repository with optimistic concurrency`
+- **Batch C: Scoring, Filtering, Lifecycle & Step Commit (Commits 91 to 95):**
+  91. `994282b`: `feat(storage): implement scoped memory search filtering across dimensions`
+  92. `7af34e8`: `feat(storage): implement deterministic multi-factor memory scoring`
+  93. `6671dc2`: `feat(storage): implement TTL expiration and active tombstone filtering`
+  94. `0428446`: `feat(storage): implement atomic 4-phase step commit protocol`
+  95. `b31c8b7`: `feat(storage): implement unified SQLiteStorageAdapter conforming to StoragePort`
+- **Batch D: Security, Runtime Integration & Crash Recovery (Commits 96 to 102):**
+  96. `9a5d809`: `feat(storage): implement fail-closed pre-persistence redaction and provenance validation`
+  97. `a7ca190`: `feat(runtime): wire StoragePort into AgentRuntime with durable step commit`
+  98. `c7e3eae`: `feat(runtime): integrate multi-signal scored memory retrieval into context compiler`
+  99. `8e5f53c`: `feat(runtime): implement checkpoint anti-resurrection safeguard on state restore`
+  100. `f68ef72`: `feat(runtime): implement orphaned run detection and recovery with dirty rollback`
+  101. `ebd26da`: `feat(runtime): implement tool idempotency crash recovery for pending invocations`
+  102. `f9c955b`: `test(integration): end-to-end runtime lifecycle over durable SQLite WAL storage`
+- **Batch E: Concurrency, CLI, and Final Validation (Commits 103 to 108):**
+  103. `04581b3`: `test(concurrency): multi-process WAL stress and crash atomicity tests`
+  104. `a513eb8`: `test(concurrency): SQLite busy timeout and contention retry tests`
+  105. `4d85c60`: `feat(demo): implement offline cross-process persistence demonstration script`
+  106. `9fe7b3d`: `feat(cli): add memory inspection, query, and tombstoning commands`
+  107. `HEAD`: `docs(remediation): update Phase 2 remediation matrix, closed findings, and audit evidence`
+  108. `target`: `test(packaging): verify isolated builds, clean distribution, and final validation gates`
 
 ### 2.6 Deferred Findings & Future Phase Traceability
 All runtime implementation requirements and findings deferred from Phase 0 and Phase 1 are strictly tracked against their scheduled implementation phases:
@@ -148,14 +187,13 @@ All runtime implementation requirements and findings deferred from Phase 0 and P
   - **M-07:** Substantive test coverage gate ($\ge 85\%$ branch coverage enforced across all modules, currently 88.73% with 200 passed tests) and wheel-installed testing in CI (RESOLVED).
   - **M-11:** Setuptools packaging compatibility matrix (`setuptools>=77.0.0`, verified with `setuptools==77.0.3`, `wheel>=0.40.0`), isolated and no-isolation builds, and runnable entrypoint (RESOLVED).
   - **H-02:** Runtime FSM execution engine, step lifecycle execution, transition validation, `RunBudgets` enforcement, orphaned-run recovery, and cancellation/timeout handling (RESOLVED).
-  - **Architectural Scope Boundaries:** Step loop phases 5–7 (memory extraction, memory commit, and durable checkpointing) are structured architectural extension points with lifecycle events, not implemented persistence; orphaned-run recovery is in-process memory state reconciliation (persistent SQLite recovery scheduled for Phase 2). Prompt fencing delimiters belong to Phase 3 Context Compilation Engine.
-- **Phase 2 (Memory Model & Storage Abstractions):**
-  - **M-04:** Scored retrieval and deterministic storage interfaces (`MemoryStoreProtocol` scoring, deterministic time, versioning, and lifecycle operations).
-  - **M-05:** Storage scoping across run, branch, namespace, and provenance (`namespace_id`, `run_id`, `branch_id`, and `origin` scoping; direct `namespace_id` columns on child tables `checkpoints` and `trace_events`).
-  - **Checkpoint & Trace Erasure Obligations & Restoration Safeguards:** Cascading purge of historical checkpoints referencing deleted runs; trace event payload compaction based on `retention_days`; **Tombstone Reconciliation** during checkpoint restoration to prevent resurrecting erased memories.
-  - **M-08:** SQLite storage schema allocation for schema versions, state hashes, and integrity constraints.
-  - **M-09:** Redaction pipeline execution before storage persistence (preventing credential leakage into SQLite WAL).
-  - **H-04:** Physical SQLite persistence transaction manager, 4-phase step commit protocol (`INTENT_RECORDED` $\rightarrow$ `TOOL_DISPATCH` $\rightarrow$ `OUTCOME_UPDATE` $\rightarrow$ `ATOMIC_STEP_COMMIT`), WAL file durability (`synchronous = NORMAL/FULL`), and `UNIQUE(namespace_id, tool_name, idempotency_key)` uniqueness constraints.
+- **Phase 2 (Memory Model & Storage Abstractions) — COMPLETE (Unified SQLite WAL Persistence):**
+  - **M-04:** Scored retrieval and deterministic storage interfaces (`StoragePort` and `MemoryStoreProtocol` scoring, deterministic time via `ClockPort`, optimistic concurrency versioning, and full lifecycle state transitions) (RESOLVED).
+  - **M-05:** Storage scoping across run, branch, namespace, and provenance (`namespace_id`, `run_id`, `branch_id`, and `origin` scoping; direct `namespace_id` columns on child tables `checkpoints`, `trace_events`, `run_steps`, and `tool_invocations`) (RESOLVED).
+  - **Checkpoint & Trace Erasure Obligations & Restoration Safeguards:** Cascading purge of historical checkpoints referencing deleted runs; trace event payload compaction based on `retention_days`; **Anti-Resurrection Tombstone Reconciliation** during checkpoint restoration to prevent resurrecting erased memories (RESOLVED).
+  - **M-08:** SQLite storage schema allocation for schema versions (`SCHEMA_V1_DDL`), deterministic SHA-256 state hashes, and cryptographic replay divergence validation (`ReplayDivergenceError`) (RESOLVED).
+  - **M-09:** Redaction pipeline execution before storage persistence (fail-closed pre-persistence redaction preventing credential leakage into SQLite WAL) (RESOLVED).
+  - **H-04:** Physical SQLite persistence transaction manager, 4-phase step commit protocol (`INTENT_RECORDED` $\rightarrow$ `TOOL_DISPATCH` $\rightarrow$ `OUTCOME_UPDATE` $\rightarrow$ `ATOMIC_STEP_COMMIT`), WAL file durability (`synchronous = NORMAL/FULL`), `UNIQUE(namespace_id, tool_name, idempotency_key)` uniqueness constraints, and orphaned run dirty rollback handling (RESOLVED).
 - **Phase 3 (Retrieval, Ranking, Context Compiler):**
   - **H-07:** Fenced prompt compiler with mandatory XML entity escaping (`&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;`) for untrusted memory content; 5-class `MemoryOrigin` provenance boundary enforcement; token budget allocation for context compilation.
   - Multi-signal retrieval scoring ($w_{rel}, w_{rec}, w_{sal}, w_{freq}, P_{decay}$).
@@ -183,7 +221,7 @@ All runtime implementation requirements and findings deferred from Phase 0 and P
   - Cryptographic HMAC state authentication for tamper detection, schema migration verification, security audit, and packaging distribution freeze.
 
 > [!NOTE]
-> **Implementation Status:** Work on Phases 1 through 12 is explicitly unstarted. Phase 0 contains exclusively contracts, deterministic test doubles, packaging, and validation scaffolding.
+> **Implementation Status:** Work on Phase 1 (Core Runtime & Lifecycle) and Phase 2 (Memory Model & Storage Abstractions) is fully complete and verified. Work on Phases 3 through 12 remains unstarted.
 
 ---
 
