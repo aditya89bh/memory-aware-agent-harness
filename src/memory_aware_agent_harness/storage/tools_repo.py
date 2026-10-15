@@ -16,11 +16,13 @@ from memory_aware_agent_harness.contracts import (
     NamespaceId,
     RecordNotFoundError,
     RunId,
+    SerializationError,
     SideEffectType,
     StepId,
     ToolCallStatus,
     ToolInvocationId,
     ToolResult,
+    to_canonical_json,
 )
 from memory_aware_agent_harness.storage.connection import transaction
 from memory_aware_agent_harness.storage.security import (
@@ -40,7 +42,7 @@ def _canonicalize_for_fingerprint(val: Any) -> Any:
         return val
     if isinstance(val, float):
         if math.isnan(val) or math.isinf(val):
-            return str(val)
+            raise SerializationError(f"Float value must be finite, got {val}")
         return int(val) if val.is_integer() else val
     if isinstance(val, Mapping):
         return {
@@ -50,7 +52,9 @@ def _canonicalize_for_fingerprint(val: Any) -> Any:
         }
     if isinstance(val, Sequence) and not isinstance(val, str | bytes):
         return [_canonicalize_for_fingerprint(item) for item in val]
-    return str(val)
+    if isinstance(val, set | frozenset):
+        return sorted([_canonicalize_for_fingerprint(item) for item in val])
+    raise SerializationError(f"Unsupported value of type {type(val).__name__} for serialization")
 
 
 def compute_argument_fingerprint(arguments: Mapping[str, Any] | None) -> str:
@@ -62,13 +66,7 @@ def compute_argument_fingerprint(arguments: Mapping[str, Any] | None) -> str:
     if not arguments:
         return hashlib.sha256(b"{}").hexdigest()
     canonical = _canonicalize_for_fingerprint(arguments)
-    serialized = json.dumps(
-        canonical,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        default=lambda o: dict(o) if isinstance(o, Mapping) else str(o),
-    )
+    serialized = to_canonical_json(canonical)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
@@ -233,11 +231,7 @@ def record_tool_intent(
                 resource_id=str(invocation_id),
             )
 
-        arguments_json = json.dumps(
-            dict(arguments) if arguments else {},
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        arguments_json = to_canonical_json(arguments if arguments is not None else {})
         arguments_json = str(
             resolve_validator(validator).sanitize_json_text(
                 arguments_json,
@@ -444,14 +438,7 @@ def record_tool_result(
             )
 
         result_json = (
-            json.dumps(
-                dict(tool_result.result),
-                default=lambda o: dict(o) if isinstance(o, Mapping) else str(o),
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            if tool_result.result is not None
-            else None
+            to_canonical_json(tool_result.result) if tool_result.result is not None else None
         )
         val = resolve_validator(validator)
         result_json = val.sanitize_json_text(

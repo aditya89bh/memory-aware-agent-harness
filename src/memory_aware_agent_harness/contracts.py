@@ -218,6 +218,30 @@ def _serialize_value(val: Any) -> Any:
     raise TypeError(f"Unsupported serializable value of type {type(val).__name__}")
 
 
+def to_canonical_json(val: Any) -> str:
+    """Serialize arbitrary data structures into canonical JSON at storage boundaries.
+
+    Supports nested dictionaries, FrozenDict, lists, tuples, sets, and JSON primitives.
+    Rejects unsupported types and non-finite floats with SerializationError.
+    """
+    try:
+        primitive = _serialize_value(val)
+        return json.dumps(
+            primitive,
+            indent=None,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+            ensure_ascii=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise SerializationError(
+            f"Failed to serialize value to canonical JSON: {exc}",
+            operation="canonical_json_serialization",
+            details={"error": str(exc), "type": type(val).__name__},
+        ) from exc
+
+
 def _parse_dt(val: str | datetime) -> datetime:
     """Parse a datetime from an ISO string or validate an existing datetime."""
     if isinstance(val, datetime):
@@ -1146,6 +1170,26 @@ class PrePersistenceSecurityError(StorageError):
         self.rule_name = rule_name
         self.namespace_id = namespace_id
         self.record_id = record_id
+
+
+class SerializationError(StorageError):
+    """Raised when an object or argument payload cannot be canonically serialized for storage."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str = "serialization",
+        details: Mapping[str, Any] | FailureDetails | None = None,
+        recoverable: bool = False,
+    ) -> None:
+        super().__init__(
+            message,
+            operation=operation,
+            details=details,
+            recoverable=recoverable,
+        )
+        self.error_code = "SERIALIZATION_ERROR"
 
 
 class DirtyRollbackError(HarnessError):
@@ -2943,6 +2987,7 @@ __all__ = [
     "RunStatus",
     "ScoredMemoryItem",
     "SerializableRecord",
+    "SerializationError",
     "SideEffectType",
     "StateResurrectionConflictError",
     "StepCommitError",
@@ -2964,5 +3009,6 @@ __all__ = [
     "ToolReconciliationReport",
     "ToolResult",
     "compute_state_hash",
+    "to_canonical_json",
     "verify_state_hash",
 ]

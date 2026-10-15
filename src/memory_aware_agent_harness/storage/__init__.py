@@ -1,5 +1,7 @@
-"""Unified SQLite WAL storage subsystem for agent harness."""
-
+from memory_aware_agent_harness.contracts import (
+    SerializationError,
+    to_canonical_json,
+)
 from memory_aware_agent_harness.storage.adapter import SQLiteStorageAdapter
 from memory_aware_agent_harness.storage.checkpoints_repo import (
     CheckpointRecord,
@@ -99,6 +101,7 @@ __all__ = [
     "PrePersistenceValidator",
     "RedactionResult",
     "SQLiteStorageAdapter",
+    "SerializationError",
     "StepCommitBundle",
     "StepCommitOutcome",
     "StorageSettings",
@@ -148,6 +151,7 @@ __all__ = [
     "search_memories",
     "search_memories_basic",
     "search_memories_scored",
+    "to_canonical_json",
     "tombstone_memory",
     "transaction",
     "update_memory_optimistic",
