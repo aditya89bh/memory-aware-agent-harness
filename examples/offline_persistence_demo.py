@@ -1,9 +1,9 @@
-"""Demonstration of cross-process offline persistence over durable SQLite WAL storage.
+"""Demonstration of offline persistence across storage sessions over durable SQLite WAL storage.
 
 Demonstrates:
-1. Process A: Run an agent step, invoke a tool, and commit durable state and checkpoint.
-2. Process A exits and closes database connections.
-3. Process B: Opens the same database, verifies the checkpoint's cryptographic hash,
+1. Session A: Run an agent step, invoke a tool, and commit durable state and checkpoint.
+2. Session A exits and closes database connections.
+3. Session B: Reopens the database with a new adapter, verifies the checkpoint's SHA-256 state hash,
    restores runtime state, and completes execution.
 """
 
@@ -148,15 +148,15 @@ def run_offline_persistence_demo(db_path: str | Path | None = None) -> dict[str,
         active_mems = storage_b.list_active(ns, kind=MemoryKind.SEMANTIC)
         print(f"[Process B] Recovered {len(active_mems)} active memories from storage.")
 
-        # 2. Retrieve checkpoint and verify cryptographic integrity
+        # 2. Retrieve checkpoint and verify SHA-256 state hash integrity
         latest_cp = storage_b.get_latest_checkpoint(run_id, ns)
         if latest_cp is None:
             raise RuntimeError(f"Expected latest checkpoint for {run_id}")
 
-        print(f"[Process B] Found checkpoint: {latest_cp.checkpoint_id}")
-        print(f"[Process B] Stored State Hash: {latest_cp.state_hash}")
+        print(f"[Session B] Found checkpoint: {latest_cp.checkpoint_id}")
+        print(f"[Session B] Stored State Hash: {latest_cp.state_hash}")
 
-        # Cryptographic integrity verification via get_checkpoint_record
+        # Deterministic SHA-256 state hash verification via get_checkpoint_record
         verified_cp = storage_b.get_checkpoint_record(
             latest_cp.checkpoint_id,
             ns,
@@ -164,7 +164,7 @@ def run_offline_persistence_demo(db_path: str | Path | None = None) -> dict[str,
         )
         if verified_cp is None:
             raise RuntimeError("Failed to retrieve or verify checkpoint")
-        print("[Process B] Checkpoint cryptographic hash verification: PASSED")
+        print("[Session B] Checkpoint SHA-256 state hash verification: PASSED")
 
         # 3. Restore agent state into new runtime instance
         runtime_b = AgentRuntime(

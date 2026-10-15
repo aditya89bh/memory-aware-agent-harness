@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -105,21 +106,30 @@ def put_memory(
                 tombstone_id=str(tomb_row["tombstone_id"]),
             )
 
-        # 2. Guard against cross-namespace overwrites
+        # 2. Guard against cross-namespace overwrites and version regressions
         existing_row = conn.execute(
-            "SELECT namespace_id FROM memory_records WHERE memory_id = ?;",
+            "SELECT version, namespace_id FROM memory_records WHERE memory_id = ?;",
             (str(record.id),),
         ).fetchone()
 
-        if existing_row is not None and existing_row["namespace_id"] != str(record.namespace_id):
-            raise CrossNamespaceAccessError(
-                f"Memory record '{record.id}' belongs to namespace "
-                f"'{existing_row['namespace_id']}', cannot mutate under "
-                f"namespace '{record.namespace_id}'",
-                requested_namespace=str(record.namespace_id),
-                target_namespace=str(existing_row["namespace_id"]),
-                resource_id=str(record.id),
-            )
+        if existing_row is not None:
+            if existing_row["namespace_id"] != str(record.namespace_id):
+                raise CrossNamespaceAccessError(
+                    f"Memory record '{record.id}' belongs to namespace "
+                    f"'{existing_row['namespace_id']}', cannot mutate under "
+                    f"namespace '{record.namespace_id}'",
+                    requested_namespace=str(record.namespace_id),
+                    target_namespace=str(existing_row["namespace_id"]),
+                    resource_id=str(record.id),
+                )
+            if record.version < existing_row["version"]:
+                raise StorageVersionConflictError(
+                    f"Version regression rejected: incoming version {record.version} is lower "
+                    f"than stored version {existing_row['version']} for memory '{record.id}'",
+                    record_id=str(record.id),
+                    expected_version=existing_row["version"],
+                    actual_version=record.version,
+                )
 
         src_refs_json = (
             json.dumps(list(record.source_references), sort_keys=True, separators=(",", ":"))
@@ -549,7 +559,7 @@ def tombstone_memory(
         conn.execute(
             """
             UPDATE memory_records
-            SET state = ?, updated_at = ?
+            SET state = ?, content = '[DELETED]', metadata_json = NULL, updated_at = ?
             WHERE memory_id = ? AND namespace_id = ?;
             """,
             (
@@ -865,7 +875,6 @@ def list_active_memories(
             """,
             (str(namespace_id), kind.value),
         ).fetchall()
-
     return tuple(_row_to_memory_record(r) for r in rows)
 
 
@@ -983,8 +992,17 @@ def search_memories(
         params.append(query_filter.as_of.astimezone(UTC).isoformat())
 
     if query_filter.query_text and query_filter.query_text.strip():
-        clauses.append("mr.content LIKE ?")
-        params.append(f"%{query_filter.query_text.strip()}%")
+        cleaned = query_filter.query_text.replace("%", "").replace("_", "").strip()
+        tokens = [t.lower() for t in re.findall(r"\w+", cleaned) if len(t) >= 3]
+        if tokens:
+            token_clauses = ["LOWER(mr.content) LIKE ?" for _ in tokens]
+            clauses.append(f"({' OR '.join(token_clauses)})")
+            params.extend(f"%{t}%" for t in tokens)
+        elif cleaned:
+            clauses.append("LOWER(mr.content) LIKE ?")
+            params.append(f"%{cleaned.lower()}%")
+        else:
+            clauses.append("1 = 0")
 
     params.append(query_filter.limit)
 
@@ -1006,6 +1024,8 @@ def search_memories_basic(
     query: str,
     kinds: Sequence[MemoryKind],
     limit: int = 50,
+    *,
+    as_of: datetime | None = None,
 ) -> tuple[MemoryRecord, ...]:
     """Search active memories by text and categories conforming to MemoryStoreProtocol."""
     query_filter = MemoryFilter(
@@ -1013,6 +1033,7 @@ def search_memories_basic(
         kinds=tuple(kinds),
         query_text=query if query.strip() else None,
         limit=limit,
+        as_of=as_of,
     )
     return search_memories(conn, query_filter)
 
@@ -1024,5 +1045,19 @@ def search_memories_scored(
     as_of: datetime | None = None,
 ) -> tuple[ScoredMemoryItem, ...]:
     """Execute scoped search and rank results with deterministic multi-factor scoring."""
-    unranked = search_memories(conn, query_filter)
+    candidate_limit = max(query_filter.limit * 10, 100)
+    expanded_filter = MemoryFilter(
+        namespace_id=query_filter.namespace_id,
+        kinds=query_filter.kinds,
+        run_id=query_filter.run_id,
+        branch_id=query_filter.branch_id,
+        origin=query_filter.origin,
+        state=query_filter.state,
+        min_confidence=query_filter.min_confidence,
+        min_salience=query_filter.min_salience,
+        as_of=query_filter.as_of or as_of,
+        query_text=query_filter.query_text,
+        limit=candidate_limit,
+    )
+    unranked = search_memories(conn, expanded_filter)
     return score_and_rank_memories(unranked, query_filter, as_of=as_of)
