@@ -25,7 +25,10 @@ from memory_aware_agent_harness.contracts import (
     ExecutionCancelledError,
     FailureDetails,
     IdGeneratorPort,
+    MemoryFilter,
+    MemoryId,
     MemoryKind,
+    MemoryState,
     MemoryStoreProtocol,
     ModelCallContext,
     ModelDecision,
@@ -83,8 +86,10 @@ def compile_execution_prompt(
     max_history_steps: int = 10,
     max_observation_chars: int = 4000,
     max_history_chars: int = 16000,
+    *,
+    context_items: Sequence[ContextItem] = (),
 ) -> str:
-    """Compile task and bounded history of prior decisions and tool observations (P1-H1).
+    """Compile task, relevant retrieved context, and bounded history (P1-H1, P2-T21).
 
     Enforces strict character-level bounds on individual observations (max_observation_chars)
     and overall accumulated history text (max_history_chars) to prevent prompt explosion
@@ -94,7 +99,7 @@ def compile_execution_prompt(
         Full prompt fencing, boundary delimiters, and indirect prompt injection defenses
         belong to Phase 3 (Context Compilation Engine).
     """
-    if not history:
+    if not history and not context_items:
         return task
 
     def _json_default(obj: Any) -> Any:
@@ -102,11 +107,25 @@ def compile_execution_prompt(
             return dict(obj)
         return str(obj)
 
-    bounded_history = history[-max_history_steps:]
-    sections: list[str] = [f"Task: {task}", "", "--- Execution History ---"]
+    sections: list[str] = [f"Task: {task}"]
+
+    if context_items:
+        sections.append("")
+        sections.append("--- Relevant Context ---")
+        for item in context_items:
+            kind_str = (
+                item.kind.value.upper() if hasattr(item.kind, "value") else str(item.kind).upper()
+            )
+            sections.append(f"[{kind_str}] (score: {item.rank_score:.2f}) {item.content}")
+
+    if not history:
+        return "\n".join(sections)
+
+    sections.append("")
+    sections.append("--- Execution History ---")
     history_entries: list[str] = []
 
-    for step in bounded_history:
+    for step in history[-max_history_steps:]:
         step_lines: list[str] = [f"[Step {step.step_number}]"]
         if step.decision.content:
             step_lines.append(f"Model: {step.decision.content}")
@@ -590,7 +609,35 @@ class AgentRuntime:
         cancellation_listener.check()
 
         included_items: list[ContextItem] = []
-        if self.memory_store is not None:
+        target_store = self.storage if self.storage is not None else self.memory_store
+        if target_store is not None and hasattr(target_store, "search_scored"):
+            query_filter = MemoryFilter(
+                namespace_id=state.namespace_id,
+                state=MemoryState.ACTIVE,
+                as_of=self.clock.now(),
+                query_text=task,
+                limit=5,
+            )
+            scored_results = target_store.search_scored(query_filter)
+            for item in scored_results:
+                record = item.record
+                cost = max(1, len(record.content.split()))
+                prov_id = (
+                    str(record.origin.value)
+                    if hasattr(record.origin, "value")
+                    else str(record.origin)
+                )
+                included_items.append(
+                    ContextItem(
+                        memory_id=record.id,
+                        kind=record.kind,
+                        content=record.content,
+                        rank_score=item.score,
+                        provenance_id=prov_id,
+                        token_cost=cost,
+                    )
+                )
+        elif self.memory_store is not None:
             retrieved = self.memory_store.search(
                 namespace_id=state.namespace_id,
                 query=task,
@@ -603,7 +650,7 @@ class AgentRuntime:
                 limit=5,
             )
             for m in retrieved:
-                cost = len(m.content.split())
+                cost = max(1, len(m.content.split()))
                 included_items.append(
                     ContextItem(
                         memory_id=m.id,
@@ -634,15 +681,39 @@ class AgentRuntime:
         )
         cancellation_listener.check()
 
-        compiled_prompt = compile_execution_prompt(task, state.step_history, max_history_steps=10)
-        prompt_token_est = len(compiled_prompt.split())
+        base_prompt = compile_execution_prompt(task, state.step_history, max_history_steps=10)
+        base_prompt_tokens = len(base_prompt.split())
+
+        sorted_candidates = sorted(included_items, key=lambda item: item.rank_score, reverse=True)
+
+        remaining_budget = state.budgets.remaining_tokens(state.cumulative_tokens.total_tokens)
+        available_context_tokens = max(0, remaining_budget - base_prompt_tokens)
+
+        allocated_items: list[ContextItem] = []
+        excluded_item_ids: dict[MemoryId, str] = {}
+        current_context_tokens = 0
+
+        for item in sorted_candidates:
+            if current_context_tokens + item.token_cost <= available_context_tokens:
+                allocated_items.append(item)
+                current_context_tokens += item.token_cost
+            else:
+                excluded_item_ids[item.memory_id] = "BUDGET_EXCEEDED"
+
+        compiled_prompt = compile_execution_prompt(
+            task,
+            state.step_history,
+            max_history_steps=10,
+            context_items=allocated_items,
+        )
+        total_tokens = current_context_tokens + base_prompt_tokens
 
         return ContextManifest(
             manifest_id=self.id_generator.generate_id(f"manifest_{step_id}"),
             step_id=step_id,
-            included_items=tuple(included_items),
-            excluded_item_ids={},
-            total_tokens=sum(item.token_cost for item in included_items) + prompt_token_est,
+            included_items=tuple(allocated_items),
+            excluded_item_ids=excluded_item_ids,
+            total_tokens=total_tokens,
             budget_limit=state.budgets.max_tokens,
             compiled_prompt=compiled_prompt,
         )
