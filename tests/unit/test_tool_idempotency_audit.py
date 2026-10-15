@@ -566,3 +566,256 @@ def test_successful_retries_using_verified_provider_supported_idempotency() -> N
         assert step_2_res.tool_results[0].result is not None
         assert step_2_res.tool_results[0].result["status"] == "succeeded"
         assert step_2_res.tool_results[0].result["amount"] == 250
+
+
+# =================================================================================================
+# Round 2 Regression Tests: P2-H1 Edge Cases
+# =================================================================================================
+
+
+def test_two_legitimate_repeated_payments_both_execute() -> None:
+    """Two legitimate pay(amount=5) operations with distinct identities must both execute."""
+    with SQLiteStorageAdapter(":memory:") as adapter:
+        ns = NamespaceId("ns_repeated_pay")
+        tool = MockPaymentTool("pay", side_effect=SideEffectType.NON_IDEMPOTENT_WRITE)
+
+        step_1_decision = ModelDecision(
+            decision_id="dec_pay_1",
+            step_id=StepId("step_1"),
+            finish_reason=ModelFinishReason.TOOL_CALL,
+            tool_calls=(
+                ToolCallRequest(
+                    call_id="call_pay_1",
+                    tool_name="pay",
+                    arguments={"amount": 5, "currency": "USD"},
+                ),
+            ),
+        )
+        step_2_decision = ModelDecision(
+            decision_id="dec_pay_2",
+            step_id=StepId("step_2"),
+            finish_reason=ModelFinishReason.TOOL_CALL,
+            tool_calls=(
+                ToolCallRequest(
+                    call_id="call_pay_2",
+                    tool_name="pay",
+                    arguments={"amount": 5, "currency": "USD"},
+                ),
+            ),
+        )
+        finish_decision = ModelDecision(
+            decision_id="dec_done",
+            step_id=StepId("step_3"),
+            finish_reason=ModelFinishReason.STOP,
+            content="done",
+        )
+
+        model = FakeModelAdapter(responses=[step_1_decision, step_2_decision, finish_decision])
+        runtime = AgentRuntime(model=model, tools=[tool], storage=adapter)
+
+        res = runtime.run(
+            task="Pay 5 twice",
+            namespace_id=ns,
+            run_id=RunId("run_pay_twice"),
+        )
+
+        # Both distinct $5 payments must have executed!
+        assert tool.call_count == 2
+        assert len(tool.executed_arguments) == 2
+        assert tool.executed_arguments[0]["amount"] == 5
+        assert tool.executed_arguments[1]["amount"] == 5
+
+        # Both step outcomes must be COMPLETED
+        assert res.step_history[0].tool_results[0].status == ToolCallStatus.COMPLETED
+        assert res.step_history[1].tool_results[0].status == ToolCallStatus.COMPLETED
+        # Invocations must have distinct invocation IDs and distinct results
+        inv1 = res.step_history[0].tool_results[0].invocation_id
+        inv2 = res.step_history[1].tool_results[0].invocation_id
+        assert inv1 != inv2
+
+
+def test_model_supplied_idempotency_key_is_ignored_for_trusted_replay() -> None:
+    """Model-supplied idempotency_key must never be trusted for business replay decisions."""
+    with SQLiteStorageAdapter(":memory:") as adapter:
+        ns = NamespaceId("ns_model_key_untrusted")
+        tool = MockPaymentTool("pay", side_effect=SideEffectType.NON_IDEMPOTENT_WRITE)
+
+        # Model attempts to supply its own 'idempotency_key' in arguments
+        step_1_decision = ModelDecision(
+            decision_id="dec_spoof_1",
+            step_id=StepId("step_1"),
+            finish_reason=ModelFinishReason.TOOL_CALL,
+            tool_calls=(
+                ToolCallRequest(
+                    call_id="call_1",
+                    tool_name="pay",
+                    arguments={"amount": 10, "idempotency_key": "spoofed_key"},
+                ),
+            ),
+        )
+        step_2_decision = ModelDecision(
+            decision_id="dec_spoof_2",
+            step_id=StepId("step_2"),
+            finish_reason=ModelFinishReason.TOOL_CALL,
+            tool_calls=(
+                ToolCallRequest(
+                    call_id="call_2",
+                    tool_name="pay",
+                    arguments={"amount": 10, "idempotency_key": "spoofed_key"},
+                ),
+            ),
+        )
+        finish_decision = ModelDecision(
+            decision_id="dec_done",
+            step_id=StepId("step_3"),
+            finish_reason=ModelFinishReason.STOP,
+            content="done",
+        )
+
+        model = FakeModelAdapter(responses=[step_1_decision, step_2_decision, finish_decision])
+        runtime = AgentRuntime(model=model, tools=[tool], storage=adapter)
+
+        res = runtime.run(
+            task="Test untrusted model key",
+            namespace_id=ns,
+            run_id=RunId("run_spoof_test"),
+        )
+
+        # Because model key is ignored, both distinct invocations execute
+        assert tool.call_count == 2
+        assert res.step_history[0].tool_results[0].status == ToolCallStatus.COMPLETED
+        assert res.step_history[1].tool_results[0].status == ToolCallStatus.COMPLETED
+
+
+def test_read_only_tool_not_cached_across_independent_runs_stale_balance() -> None:
+    """READ_ONLY results must never replay across independent runs (stale balance bug)."""
+
+    class BalanceTool(ToolProtocol):
+        def __init__(self) -> None:
+            self.name = "get_balance"
+            self.description = "Returns user account balance"
+            self.side_effect = SideEffectType.READ_ONLY
+            self.current_balance = 100
+
+        def get_schema(self) -> Mapping[str, Any]:
+            return {"type": "object", "properties": {"account": {"type": "string"}}}
+
+        def execute(
+            self, arguments: Mapping[str, Any], context: ToolCallContext
+        ) -> Mapping[str, Any]:
+            return {"account": arguments.get("account"), "balance": self.current_balance}
+
+    with SQLiteStorageAdapter(":memory:") as adapter:
+        ns = NamespaceId("ns_balance")
+        tool = BalanceTool()
+
+        call_decision = ModelDecision(
+            decision_id="dec_bal",
+            step_id=StepId("step_1"),
+            finish_reason=ModelFinishReason.TOOL_CALL,
+            tool_calls=(
+                ToolCallRequest(
+                    call_id="call_bal",
+                    tool_name="get_balance",
+                    arguments={"account": "user_A"},
+                ),
+            ),
+        )
+        stop_decision = ModelDecision(
+            decision_id="dec_stop",
+            step_id=StepId("step_2"),
+            finish_reason=ModelFinishReason.STOP,
+            content="done",
+        )
+
+        # Run 1: Balance is 100
+        model1 = FakeModelAdapter(responses=[call_decision, stop_decision])
+        runtime1 = AgentRuntime(model=model1, tools=[tool], storage=adapter)
+        res1 = runtime1.run("Check balance run 1", namespace_id=ns, run_id=RunId("run_1"))
+        assert res1.step_history[0].tool_results[0].result == {"account": "user_A", "balance": 100}
+
+        # External state changes: account balance is drained to 0!
+        tool.current_balance = 0
+
+        # Run 2: Independent run queries balance again
+        model2 = FakeModelAdapter(responses=[call_decision, stop_decision])
+        runtime2 = AgentRuntime(model=model2, tools=[tool], storage=adapter)
+        res2 = runtime2.run("Check balance run 2", namespace_id=ns, run_id=RunId("run_2"))
+
+        # Must NOT return cached 100! Must return current balance 0!
+        assert res2.step_history[0].tool_results[0].result == {"account": "user_A", "balance": 0}
+
+
+def test_provider_idempotency_key_stable_across_crashes_and_cross_run_retries() -> None:
+    """Provider idempotency key remains identical when retrying an uncertain call across runs."""
+    with SQLiteStorageAdapter(":memory:") as adapter:
+        ns = NamespaceId("ns_provider_crash")
+
+        captured_keys: list[str] = []
+
+        class StripeTool(ToolProtocol):
+            def __init__(self) -> None:
+                self.name = "stripe_charge"
+                self.description = "Processes credit card charge"
+                self.side_effect = SideEffectType.NON_IDEMPOTENT_WRITE
+                self.supports_provider_idempotency = True
+                self.should_fail = True
+
+            def get_schema(self) -> Mapping[str, Any]:
+                return {"type": "object", "properties": {"amount": {"type": "number"}}}
+
+            def execute(
+                self, arguments: Mapping[str, Any], context: ToolCallContext
+            ) -> Mapping[str, Any]:
+                captured_keys.append(context.idempotency_key)
+                if self.should_fail:
+                    raise RuntimeError("Simulated process crash during external dispatch")
+                return {"status": "succeeded", "charge_id": "ch_999"}
+
+        tool = StripeTool()
+
+        call_decision = ModelDecision(
+            decision_id="dec_charge",
+            step_id=StepId("step_1"),
+            finish_reason=ModelFinishReason.TOOL_CALL,
+            tool_calls=(
+                ToolCallRequest(
+                    call_id="call_ch_1",
+                    tool_name="stripe_charge",
+                    arguments={"amount": 50},
+                ),
+            ),
+        )
+        stop_decision = ModelDecision(
+            decision_id="dec_stop",
+            step_id=StepId("step_2"),
+            finish_reason=ModelFinishReason.STOP,
+            content="done",
+        )
+
+        # Run 1: Crashes during execution
+        model1 = FakeModelAdapter(responses=[call_decision, stop_decision])
+        runtime1 = AgentRuntime(model=model1, tools=[tool], storage=adapter)
+        res1 = runtime1.run("Charge $50", namespace_id=ns, run_id=RunId("run_charge_1"))
+
+        assert len(captured_keys) == 1
+        first_key = captured_keys[0]
+        assert first_key.startswith("prov_")
+        # Run 1 left the tool invocation as OUTCOME_UNKNOWN
+        assert res1.step_history[0].tool_results[0].status == ToolCallStatus.OUTCOME_UNKNOWN
+
+        # Recovery runs after crash
+        adapter.reconcile_tool_invocations(ns)
+
+        # Run 2: New run retries the charge after recovery
+        tool.should_fail = False
+        model2 = FakeModelAdapter(responses=[call_decision, stop_decision])
+        runtime2 = AgentRuntime(model=model2, tools=[tool], storage=adapter)
+        res2 = runtime2.run("Retry charge $50", namespace_id=ns, run_id=RunId("run_charge_2"))
+
+        assert len(captured_keys) == 2
+        second_key = captured_keys[1]
+
+        # The idempotency key sent to Stripe MUST BE IDENTICAL to prevent duplicate billing!
+        assert second_key == first_key
+        assert res2.step_history[0].tool_results[0].status == ToolCallStatus.COMPLETED

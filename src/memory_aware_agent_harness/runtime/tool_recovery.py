@@ -172,6 +172,12 @@ class ToolRecoveryEngine:
 
             # If previously COMPLETED, replay cached result
             if rec.status == ToolCallStatus.COMPLETED:
+                # Never reuse cached READ_ONLY results across independent runs!
+                if rec.side_effect == SideEffectType.READ_ONLY and (
+                    run_id is None or str(rec.run_id) != str(run_id)
+                ):
+                    return None
+
                 cached_data: Mapping[str, Any] = {}
                 if rec.result_json:
                     try:

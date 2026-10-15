@@ -1008,10 +1008,24 @@ class AgentRuntime:
             # Store and check canonical argument fingerprint
             fingerprint = compute_argument_fingerprint(call.arguments)
 
+            # Prior uncertain invocation lookup for non-idempotent operations
+            prior_uncertain = None
+            if (
+                self.storage is not None
+                and is_non_idemp
+                and hasattr(self.storage, "find_uncertain_invocation_by_fingerprint")
+            ):
+                prior_uncertain = self.storage.find_uncertain_invocation_by_fingerprint(
+                    namespace_id=state.namespace_id,
+                    tool_name=call.tool_name,
+                    argument_fingerprint=fingerprint,
+                )
+
             # Separate invocation identity from business-operation identity.
             # Model-supplied call IDs must NEVER serve as the sole trusted identity
             # for external operations.
             # Model-provided arguments must not override trusted idempotency policy.
+            # Model-supplied 'idempotency_key' is strictly ignored.
             trusted_biz_id = state.get_business_operation_id(call.tool_name, call.call_id)
             if trusted_biz_id:
                 # Caller-supplied trusted business operation ID overrides any model arguments
@@ -1023,17 +1037,14 @@ class AgentRuntime:
             ):
                 biz_func = getattr(tool, "get_business_operation_id")  # noqa: B009
                 idemp_key = str(biz_func(call.arguments, state))
+            elif supports_provider_idemp and prior_uncertain is not None:
+                # Genuine retry of an uncertain external operation: adopt the prior idempotency key
+                # so the external provider can deduplicate the request across crashes/retries!
+                idemp_key = prior_uncertain.idempotency_key
+            elif supports_provider_idemp:
+                idemp_key = f"prov_{call.tool_name}_{inv_id}"
             else:
-                model_key = call.arguments.get("idempotency_key")
-                if model_key and isinstance(model_key, str) and model_key.strip():
-                    idemp_key = model_key.strip()
-                elif is_non_idemp:
-                    if supports_provider_idemp:
-                        idemp_key = f"prov_{state.run_id}_{call.tool_name}_{fingerprint[:16]}"
-                    else:
-                        idemp_key = f"op_{call.tool_name}_{fingerprint[:16]}"
-                else:
-                    idemp_key = f"idemp_{call.tool_name}_{fingerprint[:16]}"
+                idemp_key = str(inv_id)
 
             dispatched_at = self.clock.now()
 
@@ -1046,7 +1057,7 @@ class AgentRuntime:
                         tool_name=call.tool_name,
                         arguments=call.arguments,
                         argument_fingerprint=fingerprint,
-                        run_id=None,
+                        run_id=state.run_id,
                         supports_provider_idempotency=supports_provider_idemp,
                         is_non_idempotent=is_non_idemp,
                     )
