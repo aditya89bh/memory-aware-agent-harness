@@ -2652,6 +2652,17 @@ class StoragePort(Protocol):
         """Persist a single step execution outcome."""
         ...
 
+    def record_step_start(
+        self,
+        step_id: StepId,
+        run_id: RunId,
+        namespace_id: NamespaceId,
+        step_number: int,
+        started_at: datetime,
+    ) -> None:
+        """Record initial step execution state before dispatching decisions or tools."""
+        ...
+
     # --- Tool Invocations ---
     def record_tool_intent(
         self,

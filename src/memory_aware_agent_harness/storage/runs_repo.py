@@ -288,6 +288,78 @@ def save_step(
         )
 
 
+def record_step_start(
+    conn: sqlite3.Connection,
+    *,
+    step_id: StepId,
+    run_id: RunId,
+    namespace_id: NamespaceId,
+    step_number: int,
+    started_at: datetime | None = None,
+) -> None:
+    """Record initial step execution state before dispatching decisions or tools.
+
+    Ensures the step exists in run_steps so subsequent tool invocations satisfy
+    foreign key and namespace constraints.
+
+    Args:
+        conn: Target SQLite connection.
+        step_id: Unique step identifier.
+        run_id: Parent execution run.
+        namespace_id: Tenant namespace.
+        step_number: 1-indexed step sequence number.
+        started_at: Step initiation timestamp.
+
+    Raises:
+        RecordNotFoundError: If parent run does not exist.
+        CrossNamespaceAccessError: If parent run belongs to another namespace.
+    """
+    with transaction(conn):
+        run_row = conn.execute(
+            "SELECT namespace_id FROM runs WHERE run_id = ?;",
+            (str(run_id),),
+        ).fetchone()
+
+        if run_row is None:
+            raise RecordNotFoundError(
+                f"Parent run '{run_id}' not found for step '{step_id}'",
+                record_id=str(run_id),
+                namespace_id=str(namespace_id),
+                table="runs",
+            )
+
+        if run_row["namespace_id"] != str(namespace_id):
+            raise CrossNamespaceAccessError(
+                f"Parent run '{run_id}' belongs to namespace '{run_row['namespace_id']}', "
+                f"cannot write step under namespace '{namespace_id}'",
+                requested_namespace=str(namespace_id),
+                target_namespace=str(run_row["namespace_id"]),
+                resource_id=str(run_id),
+            )
+
+        eff_started_at = (
+            started_at.astimezone(UTC).isoformat() if started_at else datetime.now(UTC).isoformat()
+        )
+
+        conn.execute(
+            """
+            INSERT INTO run_steps (
+                step_id, run_id, namespace_id, step_number, state, started_at
+            ) VALUES (?, ?, ?, ?, 'running', ?)
+            ON CONFLICT(step_id) DO UPDATE SET
+                state = 'running',
+                started_at = excluded.started_at;
+            """,
+            (
+                str(step_id),
+                str(run_id),
+                str(namespace_id),
+                step_number,
+                eff_started_at,
+            ),
+        )
+
+
 def get_step(
     conn: sqlite3.Connection,
     step_id: StepId,

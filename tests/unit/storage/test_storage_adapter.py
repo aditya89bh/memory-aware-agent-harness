@@ -522,3 +522,27 @@ def test_commit_step_bundle_direct_and_transaction() -> None:
         # Missing tool invocation returns None
         assert adapter.get_tool_invocation(ToolInvocationId("nonexistent"), ns) is None
         assert adapter.get_tool_invocation_record(ToolInvocationId("nonexistent"), ns) is None
+
+
+def test_record_step_start() -> None:
+    """Verify record_step_start sets step state to running."""
+    ns = NamespaceId("ns_step_start")
+    run_id = RunId("run_step_start")
+    step_id = StepId("step_step_start")
+
+    with SQLiteStorageAdapter(":memory:") as adapter:
+        adapter.save_run(_sample_run(str(run_id), str(ns)))
+        adapter.record_step_start(
+            step_id=step_id,
+            run_id=run_id,
+            namespace_id=ns,
+            step_number=1,
+            started_at=datetime.now(UTC),
+        )
+        row = adapter._conn.execute(
+            "SELECT state, step_number FROM run_steps WHERE step_id = ?;",
+            (str(step_id),),
+        ).fetchone()
+        assert row is not None
+        assert row["state"] == "running"
+        assert row["step_number"] == 1

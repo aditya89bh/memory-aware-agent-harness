@@ -700,6 +700,16 @@ def test_storage_port_protocol_conformance() -> None:
         def save_step(self, step_result: StepResult, namespace_id: NamespaceId) -> None:
             pass
 
+        def record_step_start(
+            self,
+            step_id: StepId,
+            run_id: RunId,
+            namespace_id: NamespaceId,
+            step_number: int,
+            started_at: datetime,
+        ) -> None:
+            pass
+
         def record_tool_intent(
             self,
             invocation_id: ToolInvocationId,

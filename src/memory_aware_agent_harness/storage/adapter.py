@@ -65,6 +65,7 @@ from memory_aware_agent_harness.storage.migrations import apply_migrations
 from memory_aware_agent_harness.storage.runs_repo import (
     get_run,
     get_step,
+    record_step_start,
     save_run,
     save_step,
 )
@@ -330,6 +331,25 @@ class SQLiteStorageAdapter(StoragePort, MemoryStoreProtocol):
         """Persist a single step execution outcome."""
         self._check_open()
         save_step(self._conn, step_result, namespace_id)
+
+    def record_step_start(
+        self,
+        step_id: StepId,
+        run_id: RunId,
+        namespace_id: NamespaceId,
+        step_number: int,
+        started_at: datetime,
+    ) -> None:
+        """Record initial step execution state before dispatching decisions or tools."""
+        self._check_open()
+        record_step_start(
+            self._conn,
+            step_id=step_id,
+            run_id=run_id,
+            namespace_id=namespace_id,
+            step_number=step_number,
+            started_at=started_at,
+        )
 
     def get_step(self, step_id: StepId, namespace_id: NamespaceId) -> StepResult | None:
         """Retrieve step execution result by identifier within a namespace."""

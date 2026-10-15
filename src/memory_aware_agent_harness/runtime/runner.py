@@ -9,12 +9,14 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from datetime import timedelta
 from typing import Any
 
 from memory_aware_agent_harness.contracts import (
     BudgetExceededError,
     CancellationToken,
+    CheckpointId,
     ClockPort,
     ContextItem,
     ContextManifest,
@@ -39,12 +41,14 @@ from memory_aware_agent_harness.contracts import (
     StepId,
     StepResult,
     StepState,
+    StoragePort,
     TokenUsage,
     ToolCallContext,
     ToolCallStatus,
     ToolInvocationId,
     ToolProtocol,
     ToolResult,
+    compute_state_hash,
 )
 from memory_aware_agent_harness.runtime.cancellation import (
     AbortDispatcher,
@@ -52,6 +56,7 @@ from memory_aware_agent_harness.runtime.cancellation import (
 )
 from memory_aware_agent_harness.runtime.events import (
     DiagnosticEventEmitter,
+    RuntimeEvent,
     RuntimeEventListener,
     RuntimeEventType,
 )
@@ -64,6 +69,10 @@ from memory_aware_agent_harness.runtime.state import (
     SystemIdGenerator,
 )
 from memory_aware_agent_harness.runtime.step_compiler import StepOutcomeCompiler
+from memory_aware_agent_harness.storage.checkpoints_repo import (
+    DEFAULT_BRANCH_ID,
+    CheckpointRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +159,7 @@ class AgentRuntime:
         *,
         tools: Sequence[ToolProtocol] | None = None,
         memory_store: MemoryStoreProtocol | None = None,
+        storage: StoragePort | None = None,
         clock: ClockPort | None = None,
         id_generator: IdGeneratorPort | None = None,
         budgets: RunBudgets | None = None,
@@ -173,7 +183,14 @@ class AgentRuntime:
                 tools_list.append(t)
         self.tools: tuple[ToolProtocol, ...] = tuple(tools_list)
         self.tools_by_name: dict[str, ToolProtocol] = {t.name: t for t in self.tools}
-        self.memory_store = memory_store
+        self.storage = storage
+        self.memory_store: MemoryStoreProtocol | None
+        if memory_store is not None:
+            self.memory_store = memory_store
+        elif storage is not None and isinstance(storage, MemoryStoreProtocol):
+            self.memory_store = storage
+        else:
+            self.memory_store = None
         self.clock = clock if clock is not None else SystemClock()
         self.id_generator = id_generator if id_generator is not None else SystemIdGenerator()
         if budgets is not None and not isinstance(budgets, RunBudgets):
@@ -187,6 +204,7 @@ class AgentRuntime:
             listeners=event_listeners,
             strict=strict_diagnostics,
         )
+        self._last_checkpoint_id: CheckpointId | None = None
 
     def run(
         self,
@@ -249,8 +267,52 @@ class AgentRuntime:
         result_builder = RunResultBuilder(state)
         final_output: str | None = None
 
+        trace_collector: RuntimeEventListener | None = None
+        if self.storage is not None:
+
+            class _StorageTraceCollector:
+                def __init__(self, st: StoragePort, ns: NamespaceId) -> None:
+                    self._st = st
+                    self._ns = ns
+
+                def on_event(self, event: RuntimeEvent) -> None:
+                    with suppress(Exception):
+                        self._st.append_trace_event(
+                            event_id=event.event_id,
+                            run_id=event.run_id,
+                            namespace_id=self._ns,
+                            sequence_num=event.sequence_number,
+                            event_type=(
+                                event.event_type.value
+                                if hasattr(event.event_type, "value")
+                                else str(event.event_type)
+                            ),
+                            payload=event.payload,
+                            emitted_at=event.timestamp,
+                            step_id=event.step_id,
+                        )
+
+            trace_collector = _StorageTraceCollector(self.storage, state.namespace_id)
+            self.event_emitter.add_listener(trace_collector)
+
         try:
             state.begin_run()
+            if self.storage is not None:
+                initial_run = RunResult(
+                    run_id=state.run_id,
+                    namespace_id=state.namespace_id,
+                    status=RunStatus.RUNNING,
+                    step_count=0,
+                    total_tokens_consumed=0,
+                    final_output=None,
+                    trace_id=f"trace_{state.run_id}",
+                    error=None,
+                    token_usage=TokenUsage.zero(),
+                    step_history=(),
+                    tool_results=(),
+                )
+                self.storage.save_run(initial_run)
+
             self.event_emitter.emit(
                 RuntimeEventType.RUN_STARTED,
                 run_id=state.run_id,
@@ -267,6 +329,14 @@ class AgentRuntime:
                     break
 
                 step_id, step_fsm = state.begin_step()
+                if self.storage is not None:
+                    self.storage.record_step_start(
+                        step_id=step_id,
+                        run_id=state.run_id,
+                        namespace_id=state.namespace_id,
+                        step_number=state.step_count,
+                        started_at=self.clock.now(),
+                    )
                 self.event_emitter.emit(
                     RuntimeEventType.STEP_STARTED,
                     run_id=state.run_id,
@@ -403,7 +473,19 @@ class AgentRuntime:
                 "Unexpected error during RUN_TERMINATED dispatch: %s",
                 exc,
             )
-        return result_builder.build(final_output=final_output)
+        finally:
+            if trace_collector is not None:
+                self.event_emitter.remove_listener(trace_collector)
+
+        final_run_result = result_builder.build(final_output=final_output)
+        if self.storage is not None:
+            try:
+                self.storage.save_run(final_run_result)
+            except Exception as exc:
+                logger.error("Failed to save terminal run state to storage: %s", exc)
+                if self.event_emitter._strict:
+                    raise
+        return final_run_result
 
     def _execute_step(
         self,
@@ -446,11 +528,18 @@ class AgentRuntime:
             )
 
             # Phases 5-7: Memory extraction, commit, and checkpoint lifecycle stubs
-            self._phase_5_to_7_lifecycle_stubs(state, step_id, step_fsm, cancellation_listener)
+            checkpoint = self._phase_5_to_7_lifecycle_stubs(
+                state, step_id, step_fsm, cancellation_listener
+            )
 
             # Phase 8: Outcome compilation
             return self._phase_8_compile_outcome(
-                state, step_id, decision, tool_results, step_compiler
+                state,
+                step_id,
+                decision,
+                tool_results,
+                step_compiler,
+                checkpoint=checkpoint,
             )
         except BaseException as exc:
             # Preserve partial step and tool execution history on aborted/failed steps
@@ -478,6 +567,9 @@ class AgentRuntime:
                     target_state=target_state,
                 )
                 state.record_step_result(partial_step)
+                if self.storage is not None:
+                    with suppress(Exception):
+                        self.storage.save_step(partial_step, state.namespace_id)
             raise
 
     def _phase_1_retrieve(
@@ -677,6 +769,21 @@ class AgentRuntime:
             )
             inv_id = ToolInvocationId(self.id_generator.generate_id(f"inv_{call.tool_name}"))
             tool = self.tools_by_name.get(call.tool_name)
+            side_effect = tool.side_effect if tool is not None else SideEffectType.READ_ONLY
+            idemp_key = f"idemp_{inv_id}"
+            dispatched_at = self.clock.now()
+
+            if self.storage is not None:
+                self.storage.record_tool_intent(
+                    invocation_id=inv_id,
+                    step_id=step_id,
+                    namespace_id=state.namespace_id,
+                    tool_name=call.tool_name,
+                    arguments=call.arguments,
+                    side_effect=side_effect,
+                    idempotency_key=idemp_key,
+                    dispatched_at=dispatched_at,
+                )
 
             if tool is None:
                 fail_details = FailureDetails(
@@ -685,17 +792,18 @@ class AgentRuntime:
                     step_id=step_id,
                     error_code="TOOL_NOT_FOUND",
                 )
-                tool_results.append(
-                    ToolResult(
-                        invocation_id=inv_id,
-                        tool_name=call.tool_name,
-                        status=ToolCallStatus.FAILED,
-                        side_effect=SideEffectType.READ_ONLY,
-                        idempotency_key=f"idemp_{inv_id}",
-                        error=f"Tool '{call.tool_name}' not found",
-                        failure_details=fail_details,
-                    )
+                missing_res = ToolResult(
+                    invocation_id=inv_id,
+                    tool_name=call.tool_name,
+                    status=ToolCallStatus.FAILED,
+                    side_effect=SideEffectType.READ_ONLY,
+                    idempotency_key=idemp_key,
+                    error=f"Tool '{call.tool_name}' not found",
+                    failure_details=fail_details,
                 )
+                tool_results.append(missing_res)
+                if self.storage is not None:
+                    self.storage.record_tool_result(missing_res, state.namespace_id)
                 self.event_emitter.emit(
                     RuntimeEventType.TOOL_COMPLETED,
                     run_id=state.run_id,
@@ -710,7 +818,7 @@ class AgentRuntime:
                 step_id=step_id,
                 namespace_id=state.namespace_id,
                 invocation_id=inv_id,
-                idempotency_key=f"idemp_{inv_id}",
+                idempotency_key=idemp_key,
                 deadline=deadline,
                 cancellation_token=state.cancellation_token,
             )
@@ -719,17 +827,18 @@ class AgentRuntime:
             try:
                 raw_res = tool.execute(call.arguments, tool_ctx)
                 t_elapsed_ms = (self.clock.now() - t_start).total_seconds() * 1000.0
-                tool_results.append(
-                    ToolResult(
-                        invocation_id=inv_id,
-                        tool_name=call.tool_name,
-                        status=ToolCallStatus.COMPLETED,
-                        side_effect=tool.side_effect,
-                        idempotency_key=f"idemp_{inv_id}",
-                        result=raw_res,
-                        execution_time_ms=t_elapsed_ms,
-                    )
+                completed_res = ToolResult(
+                    invocation_id=inv_id,
+                    tool_name=call.tool_name,
+                    status=ToolCallStatus.COMPLETED,
+                    side_effect=tool.side_effect,
+                    idempotency_key=idemp_key,
+                    result=raw_res,
+                    execution_time_ms=t_elapsed_ms,
                 )
+                tool_results.append(completed_res)
+                if self.storage is not None:
+                    self.storage.record_tool_result(completed_res, state.namespace_id)
             except (ExecutionCancelledError, PolicyViolationError) as exc:
                 t_elapsed_ms = (self.clock.now() - t_start).total_seconds() * 1000.0
                 is_mutating = tool.side_effect in (
@@ -743,18 +852,19 @@ class AgentRuntime:
                         step_id=step_id,
                         error_code="SIDE_EFFECT_UNCERTAIN",
                     )
-                    tool_results.append(
-                        ToolResult(
-                            invocation_id=inv_id,
-                            tool_name=call.tool_name,
-                            status=ToolCallStatus.OUTCOME_UNKNOWN,
-                            side_effect=tool.side_effect,
-                            idempotency_key=f"idemp_{inv_id}",
-                            error=str(exc),
-                            failure_details=fail_details,
-                            execution_time_ms=t_elapsed_ms,
-                        )
+                    uncertain_res = ToolResult(
+                        invocation_id=inv_id,
+                        tool_name=call.tool_name,
+                        status=ToolCallStatus.OUTCOME_UNKNOWN,
+                        side_effect=tool.side_effect,
+                        idempotency_key=idemp_key,
+                        error=str(exc),
+                        failure_details=fail_details,
+                        execution_time_ms=t_elapsed_ms,
                     )
+                    tool_results.append(uncertain_res)
+                    if self.storage is not None:
+                        self.storage.record_tool_result(uncertain_res, state.namespace_id)
                     self.event_emitter.emit(
                         RuntimeEventType.TOOL_COMPLETED,
                         run_id=state.run_id,
@@ -780,18 +890,19 @@ class AgentRuntime:
                     step_id=step_id,
                     error_code=error_code,
                 )
-                tool_results.append(
-                    ToolResult(
-                        invocation_id=inv_id,
-                        tool_name=call.tool_name,
-                        status=status,
-                        side_effect=tool.side_effect,
-                        idempotency_key=f"idemp_{inv_id}",
-                        error=str(exc),
-                        failure_details=fail_details,
-                        execution_time_ms=t_elapsed_ms,
-                    )
+                err_res = ToolResult(
+                    invocation_id=inv_id,
+                    tool_name=call.tool_name,
+                    status=status,
+                    side_effect=tool.side_effect,
+                    idempotency_key=idemp_key,
+                    error=str(exc),
+                    failure_details=fail_details,
+                    execution_time_ms=t_elapsed_ms,
                 )
+                tool_results.append(err_res)
+                if self.storage is not None:
+                    self.storage.record_tool_result(err_res, state.namespace_id)
 
             self.event_emitter.emit(
                 RuntimeEventType.TOOL_COMPLETED,
@@ -816,7 +927,7 @@ class AgentRuntime:
         step_id: StepId,
         step_fsm: StepFSM,
         cancellation_listener: CancellationListener,
-    ) -> None:
+    ) -> CheckpointRecord | None:
         """Execute extension point stubs for memory extraction, commit, and checkpointing."""
         # Phase 5: EXTRACT MEMORIES
         step_fsm.transition_to(StepState.EXTRACTING_MEMORIES)
@@ -848,6 +959,31 @@ class AgentRuntime:
         )
         cancellation_listener.check()
 
+        checkpoint: CheckpointRecord | None = None
+        if self.storage is not None:
+            state_payload: dict[str, Any] = {
+                "run_id": str(state.run_id),
+                "step_id": str(step_id),
+                "step_number": state.step_count,
+                "status": state.status.value,
+                "tokens": state.cumulative_tokens.total_tokens,
+            }
+            state_payload_json = json.dumps(state_payload, sort_keys=True)
+            state_hash = compute_state_hash(state_payload)
+            checkpoint = CheckpointRecord(
+                checkpoint_id=CheckpointId(self.id_generator.generate_id(f"ckpt_{step_id}")),
+                run_id=state.run_id,
+                step_id=step_id,
+                branch_id=DEFAULT_BRANCH_ID,
+                namespace_id=state.namespace_id,
+                parent_checkpoint_id=self._last_checkpoint_id,
+                state_payload_json=state_payload_json,
+                state_hash=state_hash,
+                created_at=self.clock.now(),
+            )
+            self._last_checkpoint_id = checkpoint.checkpoint_id
+        return checkpoint
+
     def _phase_8_compile_outcome(
         self,
         state: LifecycleState,
@@ -855,6 +991,7 @@ class AgentRuntime:
         decision: ModelDecision,
         tool_results: list[ToolResult],
         step_compiler: StepOutcomeCompiler,
+        checkpoint: CheckpointRecord | None = None,
     ) -> StepResult:
         step_result = step_compiler.compile_step(
             decision=decision,
@@ -872,4 +1009,43 @@ class AgentRuntime:
                 "finish_reason": str(decision.finish_reason),
             },
         )
+
+        if self.storage is not None:
+            current_run_snapshot = RunResult(
+                run_id=state.run_id,
+                namespace_id=state.namespace_id,
+                status=state.status,
+                step_count=state.step_count,
+                total_tokens_consumed=state.cumulative_tokens.total_tokens,
+                final_output=None,
+                trace_id=f"trace_{state.run_id}",
+                error=None,
+                token_usage=state.cumulative_tokens,
+                step_history=(*state.step_history, step_result),
+                tool_results=tuple(tool_results),
+            )
+            if hasattr(self.storage, "commit_step_transaction"):
+                self.storage.commit_step_transaction(
+                    step_result=step_result,
+                    run_result=current_run_snapshot,
+                    namespace_id=state.namespace_id,
+                    proposed_memories=(),
+                    lineage_entries=(),
+                    checkpoint=checkpoint,
+                    trace_events=(),
+                )
+            else:
+                self.storage.save_step(step_result, state.namespace_id)
+                self.storage.save_run(current_run_snapshot)
+                if checkpoint is not None:
+                    self.storage.save_checkpoint(
+                        checkpoint_id=checkpoint.checkpoint_id,
+                        run_id=checkpoint.run_id,
+                        step_id=checkpoint.step_id,
+                        branch_id=checkpoint.branch_id,
+                        namespace_id=checkpoint.namespace_id,
+                        state_payload=checkpoint.state_payload(),
+                        created_at=checkpoint.created_at,
+                        parent_checkpoint_id=checkpoint.parent_checkpoint_id,
+                    )
         return step_result
