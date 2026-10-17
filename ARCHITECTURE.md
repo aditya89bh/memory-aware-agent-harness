@@ -478,11 +478,11 @@ flowchart TD
 - Memory records and checkpoint states written on branch $B$ are strictly isolated from root and sibling branches.
 - Knowledge sharing across branches requires explicit consolidation policy evaluation.
 
-### 6.3 Checkpoint Restoration Safeguard (Anti-Resurrection)
-Checkpoint snapshots store serialized state payloads (`state_payload_json`) containing working memory, uncommitted candidates, and execution context captured at step time. If a memory was deleted or tombstoned after the checkpoint was created, rolling back to that checkpoint must never re-introduce the purged information into active execution:
+### 6.3 Checkpoint Restoration Safeguard (Tombstone Reconciliation)
+Checkpoint snapshots store serialized state payloads (`state_payload_json`) containing working memory, uncommitted candidates, and execution context captured at step time. When a memory was deleted or tombstoned after the checkpoint was created, checkpoint restoration mitigates re-introducing purged memory records via ID-based tombstone reconciliation:
 - **Tombstone Reconciliation:** Before rehydrating working memory or state from a checkpoint blob, the restore engine queries `tombstones WHERE namespace_id = ?`.
-- **Purge Invariant:** Any memory record ID matching an active tombstone is filtered out and omitted from restored state.
-- **Conflict Handling:** If restoring execution without the purged memory produces an irreconcilable goal conflict, the run halts in `PAUSED` or `FAILED` with `StateResurrectionConflictError` requiring operator mediation.
+- **ID-Based Purge Filtering & Limitations:** Any memory record ID matching an active tombstone is filtered out and omitted from restored working memory and candidate pools. Because reconciliation operates strictly on memory record IDs, it does not guarantee universal anti-resurrection for memory content already embedded inside serialized prompts, step history, tool outputs, or derived memories created under new IDs.
+- **Conflict Handling:** If restoring execution without the purged memory record IDs produces an irreconcilable goal conflict, the run halts in `PAUSED` or `FAILED` with `StateResurrectionConflictError` requiring operator mediation.
 
 ---
 

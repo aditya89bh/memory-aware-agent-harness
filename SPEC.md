@@ -262,11 +262,11 @@ Historical checkpoint state payloads (`state_payload_json`) and trace event mani
 1. **Retention Pruning:** Historical trace event payloads older than configured retention limits (`retention_days`) are purged or scrubbed during compaction; sequence counters and run tombstones remain intact.
 2. **Checkpoint Invalidation:** Historical checkpoints referencing deleted runs are cascade-purged. For active runs, historical checkpoint payloads undergo payload scrubbing during compaction if configured.
 
-### 6.5 Checkpoint Restoration Safeguard (Anti-Resurrection)
-To prevent checkpoint restoration or execution rollback from resurrecting erased memories into active state:
+### 6.5 Checkpoint Restoration Safeguard (Tombstone Reconciliation)
+To mitigate checkpoint restoration or execution rollback from restoring erased memory records into active working memory:
 1. **Tombstone Reconciliation:** Prior to rehydrating state from a historical `state_payload_json`, the rehydration engine queries `tombstones WHERE namespace_id = ?`.
-2. **Purge Filtering:** Any memory record ID matching an active tombstone is strictly stripped and omitted from the restored working memory and candidate pool.
-3. **Conflict Refusal:** If execution cannot safely proceed without the purged information, rehydration halts and transitions the run to `PAUSED` or `FAILED` with `StateResurrectionConflictError` requiring human operator triage.
+2. **ID-Based Purge Filtering & Limitations:** Any memory record ID matching an active tombstone is stripped and omitted from the restored working memory and candidate pool. Because this safeguard operates strictly on memory record IDs, it does not guarantee universal anti-resurrection for memory content already embedded inside serialized prompts, step history, tool outputs, or derived memories created under different IDs.
+3. **Conflict Refusal:** If execution cannot safely proceed without the purged record IDs, rehydration halts and transitions the run to `PAUSED` or `FAILED` with `StateResurrectionConflictError` requiring human operator triage.
 
 ---
 
